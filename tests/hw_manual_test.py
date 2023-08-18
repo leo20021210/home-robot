@@ -13,7 +13,7 @@ YAW_TOL = 0.2
 
 if __name__ == "__main__":
     print("Initializing...")
-    robot = StretchClient()
+    robot = StretchClient(init_node = False)
 
     # Reset robot
     print("Resetting robot...")
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     print("Testing robot navigation...")
     robot.switch_to_navigation_mode()
 
-    xyt_goal = [0.25, 0.25, -np.pi / 2]
+    xyt_goal = [0.25, -0.25, -np.pi / 2]
     robot.nav.navigate_to(xyt_goal)
 
     xyt_curr = robot.nav.get_base_pose()

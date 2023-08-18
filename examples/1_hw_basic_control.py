@@ -5,8 +5,9 @@ from home_robot_hw.remote import StretchClient
 
 if __name__ == "__main__":
     robot = StretchClient()
+    print("here")
     model = HelloStretchKinematics()
-
+    print("here")
     # Acquire camera observations
     imgs = robot.head.get_images()
 
