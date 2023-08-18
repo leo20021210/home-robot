@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -20,8 +26,11 @@ class SimpleGraspMotionPlanner(object):
         self.pregrasp_height = pregrasp_height
 
     def plan_to_grasp(
-        self, grasp_pose: Tuple[np.ndarray], initial_cfg: np.ndarray
-    ) -> Optional[List[np.ndarray]]:
+        self,
+        grasp_pose: Tuple[np.ndarray],
+        initial_cfg: np.ndarray,
+        z_standoff=0.4,
+    ) -> Optional[List[Tuple]]:
         """Create offsets for the full trajectory plan to get to the object.
         Then return that plan.
 
@@ -54,8 +63,8 @@ class SimpleGraspMotionPlanner(object):
 
         # Standoff is 8cm over the grasp for now
         # Overwrite standoff pos.z with a really high value so it comes in from above
-        standoff_pos = grasp_pos + np.array([0.0, 0.0, 0.4])
-        standoff_pos[2] = np.min([1.1, standoff_pos[2]])
+        standoff_pos = grasp_pos + np.array([0.0, 0.0, z_standoff])
+        standoff_pos[2] = np.min([self.robot.max_arm_height, standoff_pos[2]])
         standoff_cfg, success, _ = self.robot.manip_ik(
             (standoff_pos, grasp_quat), q0=None
         )

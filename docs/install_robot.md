@@ -21,12 +21,26 @@ sudo apt install python-is-python3 pybind11-dev
 git clone https://github.com/facebookresearch/home-robot
 HOME_ROBOT_ROOT=$(realpath home-robot)
 
-# Install the core home_robot package
+# Install requirements
 cd $HOME_ROBOT_ROOT/src/home_robot
+pip install -r requirements.txt
+
+# Install the core home_robot package
 pip install -e .
 
 # Install SLAM dependency on the robot
 sudo apt install ros-noetic-hector-slam 
+
+# Create a catkin workspace  - this will contain your code
+# It may already exist. If so, skip this step
+cd $HOME
+mkdir -p catkin_ws/src
+cd catkin_ws
+catkin_init_workspace
+
+# Stretch ROS library
+cd $HOME/catkin_ws/src
+git clone https://github.com/hello-robot/stretch_ros.git --branch noetic
 
 # Set up the python package for ROS
 ln -s $HOME_ROBOT_ROOT/src/home_robot_hw $HOME/catkin_ws/src/home_robot_hw

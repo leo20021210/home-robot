@@ -5,16 +5,23 @@
 import json
 import os
 import shutil
-from typing import Optional
+from collections import defaultdict
+from typing import List, Optional
 
 import cv2
 import numpy as np
 import skimage.morphology
+from omegaconf import DictConfig
 from PIL import Image
 
 import home_robot.utils.pose as pu
 import home_robot.utils.visualization as vu
-from home_robot.perception.constants import FloorplannertoMukulIndoor, HM3DtoCOCOIndoor
+from home_robot.mapping.semantic.instance_tracking_modules import InstanceMemory
+from home_robot.perception.constants import (
+    FloorplannertoMukulIndoor,
+    HM3DtoCOCOIndoor,
+    HM3DtoHSSD28Indoor,
+)
 from home_robot.perception.constants import PaletteIndices as PI
 from home_robot.perception.constants import RearrangeDETICCategories
 
@@ -24,19 +31,20 @@ class VIS_LAYOUT:
     FIRST_PERSON_W = 360
     TOP_DOWN_W = HEIGHT
     THIRD_PERSON_W = HEIGHT
-    LEFT_PADDING = 15
+    LEFT_PADDING = 40
+    MIDDLE_PADDING = 15
     TOP_PADDING = 50
     LEGEND_TOP_PADDING = 5
-    BOTTOM_PADDING = 240  # 80
+    BOTTOM_PADDING = 120
     Y1 = TOP_PADDING
     Y2 = TOP_PADDING + HEIGHT
     FIRST_RGB_X1 = LEFT_PADDING
     FIRST_RGB_X2 = LEFT_PADDING + FIRST_PERSON_W
-    FIRST_SEM_X1 = LEFT_PADDING + FIRST_RGB_X2
+    FIRST_SEM_X1 = MIDDLE_PADDING + FIRST_RGB_X2
     FIRST_SEM_X2 = FIRST_SEM_X1 + FIRST_PERSON_W
-    TOP_DOWN_X1 = FIRST_SEM_X2 + LEFT_PADDING
+    TOP_DOWN_X1 = FIRST_SEM_X2 + MIDDLE_PADDING
     TOP_DOWN_X2 = TOP_DOWN_X1 + TOP_DOWN_W
-    THIRD_PERSON_X1 = TOP_DOWN_X2 + LEFT_PADDING
+    THIRD_PERSON_X1 = TOP_DOWN_X2 + MIDDLE_PADDING
     THIRD_PERSON_X2 = THIRD_PERSON_X1 + THIRD_PERSON_W
     IMAGE_HEIGHT = Y2 + BOTTOM_PADDING
     IMAGE_WIDTH = THIRD_PERSON_X2 + LEFT_PADDING
@@ -61,20 +69,14 @@ class Visualizer:
         else:
             self.episodes_data_path = config.TASK_CONFIG.DATASET.DATA_PATH
         assert (
-            "rearrange" in self.episodes_data_path
+            "ovmm" in self.episodes_data_path
             or "hm3d" in self.episodes_data_path
             or "mp3d" in self.episodes_data_path
         )
-        if "hm3d" in self.episodes_data_path:
-            if config.AGENT.SEMANTIC_MAP.semantic_categories == "coco_indoor":
-                self.semantic_category_mapping = HM3DtoCOCOIndoor()
-            else:
-                raise NotImplementedError
-        elif (
-            "rearrange" in self.episodes_data_path
-            and hasattr(config, "habitat")
-            and "CatNavToObjTask" in config.habitat.task.type
-        ):
+        self.ground_truth_semantics = config.GROUND_TRUTH_SEMANTICS
+
+        self.semantic_category_mapping = None
+        if "ovmm" in self.episodes_data_path:
             if self._dataset is None:
                 with open(config.ENVIRONMENT.category_map_file) as f:
                     category_map = json.load(f)
@@ -117,29 +119,6 @@ class Visualizer:
                 self.semantic_category_mapping = RearrangeDETICCategories(
                     self.obj_rec_combined_mapping
                 )
-            else:
-                self.semantic_category_mapping = None
-
-        elif "floorplanner" in self.episodes_data_path:
-            if config.AGENT.SEMANTIC_MAP.semantic_categories == "mukul_indoor":
-                self.semantic_category_mapping = FloorplannertoMukulIndoor()
-            else:
-                raise NotImplementedError
-        elif "mp3d" in self.episodes_data_path:
-            # TODO This is a hack to get unit tests running, we'll need to
-            #  adapt this if we want to run ObjectNav on MP3D
-            if config.AGENT.SEMANTIC_MAP.semantic_categories == "mukul_indoor":
-                self.semantic_category_mapping = FloorplannertoMukulIndoor()
-            else:
-                raise NotImplementedError
-
-        self.num_sem_categories = config.AGENT.SEMANTIC_MAP.num_sem_categories
-        self.map_resolution = config.AGENT.SEMANTIC_MAP.map_resolution
-        map_size_cm = config.AGENT.SEMANTIC_MAP.map_size_cm
-        self.map_shape = (
-            map_size_cm // self.map_resolution,
-            map_size_cm // self.map_resolution,
-        )
 
         self.vis_dir = None
         self.image_vis = None
@@ -149,11 +128,32 @@ class Visualizer:
         self.font_scale = 1
         self.text_color = (20, 20, 20)  # BGR
         self.text_thickness = 2
+        self.show_rl_obs = getattr(config, "SHOW_RL_OBS", False)
+        self.num_sem_categories = None
+        self.map_resolution = None
+        self.map_shape = None
+
+    def set_map_params(self, map_config: DictConfig):
+        """
+        Sets the map parameters needed for visualization as class members using the config specified under AGENT.SEMANTIC_MAP
+
+        Args:
+            map_config: DictConfig containing the map parameters
+        """
+        self.num_sem_categories = map_config.num_sem_categories
+        self.map_resolution = map_config.map_resolution
+        map_size_cm = map_config.map_size_cm
+        self.map_shape = (
+            map_size_cm // self.map_resolution,
+            map_size_cm // self.map_resolution,
+        )
+
+        self.instance_dilation_selem = skimage.morphology.disk(1)
 
     def reset(self):
         self.vis_dir = self.default_vis_dir
         self.image_vis = None
-        self.visited_map_vis = np.zeros(self.map_shape)
+        self.visited_map_vis = None
         self.last_xy = None
 
     def set_vis_dir(self, scene_id: str, episode_id: str):
@@ -165,11 +165,11 @@ class Visualizer:
     def disable_print_images(self):
         self.print_images = False
 
-    def get_semantic_vis(self, semantic_map, rgb_frame=None):
+    def get_semantic_vis(self, semantic_map, palette, rgb_frame=None):
         semantic_map_vis = Image.new(
             "P", (semantic_map.shape[1], semantic_map.shape[0])
         )
-        semantic_map_vis.putpalette(self.semantic_category_mapping.map_color_palette)
+        semantic_map_vis.putpalette(palette)
         semantic_map_vis.putdata(semantic_map.flatten().astype(np.uint8))
 
         if rgb_frame is not None:
@@ -191,10 +191,58 @@ class Visualizer:
 
         return semantic_map_vis
 
+    def flatten_instance_map(self, instance_map):
+        """
+        Flatten the instance map.
+
+        Args:
+            instance_map: np.ndarray of shape [num_sem_categories - 2, H, W] where each channel has instances labeled as 1, 2, ...
+
+        Returns:
+            instance_map_combined: Flattened instance map with globally combined instance labels.
+            instances_per_category: Number of instances per category.
+        """
+        num_channels, height, width = instance_map.shape
+        instance_map_flattened = instance_map.reshape(num_channels, -1)
+        instances_per_category = np.max(instance_map_flattened, axis=1).astype(np.int64)
+
+        instance_map_combined = instance_map[0].copy()
+
+        if num_channels > 1:
+            cumulative_instances = np.cumsum(instances_per_category[:-1])
+            instance_map_combined += np.sum(
+                instance_map[1:] * cumulative_instances[:, np.newaxis, np.newaxis],
+                axis=0,
+            )
+
+        return instance_map_combined, instances_per_category
+
+    def update_semantic_map_with_instances(self, semantic_map, instance_map):
+        """
+        Update the semantic mapping with instance ids.
+
+        Draws borders around instances in the semantic map.
+
+        Args:
+            semantic_map: np.ndarray of shape [H, W] with semantic categories.
+            instance_map: np.ndarray of shape [num_sem_categories - 2, H, W] where each channel has instances labeled as 1, 2, ...
+        """
+        for instance_channel in instance_map:
+            if np.sum(instance_channel) == 0:
+                continue
+            instance_channel = (instance_channel > 0).astype(np.uint8)
+            # get the border pixels
+            border_pixels = np.logical_and(
+                cv2.dilate(instance_channel, self.instance_dilation_selem),
+                np.logical_not(instance_channel),
+            )
+            # update semantic map with instance ids
+            semantic_map[border_pixels > 0] = PI.INSTANCE_BORDER
+
     def visualize(
         self,
         timestep: int,
-        semantic_frame: np.ndarray,
+        semantic_frame: np.ndarray = None,
         obstacle_map: np.ndarray = None,
         goal_map: np.ndarray = None,
         closest_goal_map: Optional[np.ndarray] = None,
@@ -212,6 +260,10 @@ class Visualizer:
         short_term_goal: np.ndarray = None,
         dilated_obstacle_map: np.ndarray = None,
         semantic_category_mapping: Optional[RearrangeDETICCategories] = None,
+        rl_obs_frame: Optional[np.ndarray] = None,
+        semantic_map_config=None,
+        instance_map: Optional[np.ndarray] = None,
+        instance_memory: Optional[InstanceMemory] = None,
         **kwargs,
     ):
         """Visualize frame input and semantic map.
@@ -231,6 +283,11 @@ class Visualizer:
             timestep: time step within the episode
             visualize_goal: if True, visualize goal
             curr_skill: the skill currently being executed
+            curr_action: the action that will be executed in current step
+            short_term_goal: (M, M) map showing the short term goal
+            dilated_obstacle_map: (M, M) obstacle map after dilation
+            semantic_category_mapping: contains category id to category mapping and color palette
+            rl_obs_frame: variable sized image containing all observations passed to RL (useful for debugging)
         """
         # Do nothing if visualization is off
         if not self.show_images and not self.print_images:
@@ -240,16 +297,21 @@ class Visualizer:
             self.semantic_category_mapping = semantic_category_mapping
 
         # Initialize
-        if self.image_vis is None:
-            self.image_vis = self._init_vis_image(goal_name)
+        if self.image_vis is None or self.show_rl_obs:
+            self.image_vis = self._init_vis_image(goal_name, rl_obs_frame)
 
         image_vis = self.image_vis.copy()
 
         # if curr_skill is not None, place the skill name below the third person image
+        text = None
         if curr_skill is not None and curr_action is not None:
+            text = curr_skill + ": " + curr_action
+        elif curr_skill is not None:
+            text = curr_skill
+        if text is not None:
             image_vis = self._put_text_on_image(
                 image_vis,
-                curr_skill + "\n" + curr_action,
+                text,
                 V.THIRD_PERSON_X1,
                 V.Y2,
                 V.THIRD_PERSON_W,
@@ -259,9 +321,16 @@ class Visualizer:
         if dilated_obstacle_map is not None:
             obstacle_map = dilated_obstacle_map
 
+        if semantic_map_config is not None:
+            self.set_map_params(semantic_map_config)
+
+        palette = self.semantic_category_mapping.map_color_palette.copy()
+
         if obstacle_map is not None:
             curr_x, curr_y, curr_o, gy1, gy2, gx1, gx2 = sensor_pose
             gy1, gy2, gx1, gx2 = int(gy1), int(gy2), int(gx1), int(gx2)
+            if self.visited_map_vis is None:
+                self.visited_map_vis = np.zeros(self.map_shape)
 
             # Update visited map with last visited area
             if self.last_xy is not None:
@@ -281,12 +350,13 @@ class Visualizer:
                 )
             self.last_xy = (curr_x, curr_y)
 
-            semantic_map += PI.SEM_START
-
             # Obstacles, explored, and visited areas
             no_category_mask = (
-                semantic_map == PI.SEM_START + self.num_sem_categories - 1
+                semantic_map == self.num_sem_categories - 1
             )  # Assumes the last category is "other"
+
+            semantic_map += PI.SEM_START
+
             obstacle_mask = np.rint(obstacle_map) == 1
             explored_mask = np.rint(explored_map) == 1
             visited_mask = self.visited_map_vis[gy1:gy2, gx1:gx2] == 1
@@ -308,6 +378,7 @@ class Visualizer:
                     )
                     closest_goal_mask = closest_goal_mat == 1
                     semantic_map[closest_goal_mask] = PI.CLOSEST_GOAL
+
                 if short_term_goal is not None:
                     short_term_goal_mask = np.zeros(goal_mask.shape)
                     short_term_goal_mask[short_term_goal[0], short_term_goal[1]] = 1
@@ -321,19 +392,12 @@ class Visualizer:
                     short_term_goal_mask = short_term_goal_mask == 1
                     semantic_map[short_term_goal_mask] = PI.SHORT_TERM_GOAL
 
-            # Semantic categories
-            semantic_map_vis = self.get_semantic_vis(semantic_map)
-            semantic_map_vis = np.flipud(semantic_map_vis)
+            if instance_map is not None:
+                self.update_semantic_map_with_instances(semantic_map, instance_map)
 
-            # overlay the regions the agent has been close to
-            been_close_map = np.flipud(np.rint(been_close_map) == 1)
-            color_index = PI.BEEN_CLOSE * 3
-            color = self.semantic_category_mapping.map_color_palette[
-                color_index : color_index + 3
-            ][::-1]
-            semantic_map_vis[been_close_map] = (
-                semantic_map_vis[been_close_map] + color
-            ) / 2
+            # Semantic categories
+            semantic_map_vis = self.get_semantic_vis(semantic_map, palette)
+            semantic_map_vis = np.flipud(semantic_map_vis)
 
             semantic_map_vis = cv2.resize(
                 semantic_map_vis,
@@ -356,28 +420,32 @@ class Visualizer:
             color = self.semantic_category_mapping.map_color_palette[9:12][::-1]
             cv2.drawContours(image_vis, [agent_arrow], 0, color, -1)
 
-        # First-person RGB frame
-        rgb_frame = semantic_frame[:, :, [2, 1, 0]]
-        image_vis[V.Y1 : V.Y2, V.FIRST_RGB_X1 : V.FIRST_RGB_X2] = cv2.resize(
-            rgb_frame, (V.FIRST_PERSON_W, V.HEIGHT)
-        )
-        # Semantic categories
-        first_person_semantic_map_vis = self.get_semantic_vis(
-            semantic_frame[:, :, 3] + PI.SEM_START, rgb_frame
-        )
-        # First-person semantic frame
-        image_vis[V.Y1 : V.Y2, V.FIRST_SEM_X1 : V.FIRST_SEM_X2] = cv2.resize(
-            first_person_semantic_map_vis,
-            (V.FIRST_PERSON_W, V.HEIGHT),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        # overlay RL observation frame
+        if self.show_rl_obs and rl_obs_frame is not None:
+            # Reshape the height while maintaining aspect ratio to V.HEIGHT
+            rl_obs_frame = rl_obs_frame[:, :, [2, 1, 0]]
+            # find the width of the frame such that height is V.HEIGHT
+            width = int(rl_obs_frame.shape[1] * V.HEIGHT / rl_obs_frame.shape[0])
+            rl_obs_frame = cv2.resize(
+                rl_obs_frame,
+                (width, V.HEIGHT),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            image_vis[V.Y1 : V.Y2, V.TOP_DOWN_X1 : V.TOP_DOWN_X1 + width] = rl_obs_frame
 
-        if third_person_image is not None:
+        elif third_person_image is not None:
             image_vis[V.Y1 : V.Y2, V.THIRD_PERSON_X1 : V.THIRD_PERSON_X2] = cv2.resize(
                 third_person_image[:, :, [2, 1, 0]],
                 (V.THIRD_PERSON_W, V.HEIGHT),
             )
 
+        # First-person RGB frame
+        if semantic_frame is not None:
+            image_vis = self._visualize_semantic_frame(
+                image_vis, semantic_frame, palette
+            )
+        if instance_memory is not None:
+            image_vis = self._visualize_instance_counts(image_vis, instance_memory)
         if self.show_images:
             cv2.imshow("Visualization", image_vis)
             cv2.waitKey(1)
@@ -386,6 +454,75 @@ class Visualizer:
                 os.path.join(self.vis_dir, "snapshot_{:03d}.png".format(timestep)),
                 image_vis,
             )
+
+    def _visualize_semantic_frame(
+        self, image_vis: np.ndarray, semantic_frame: np.ndarray, palette: List
+    ):
+        """
+        Add semantic frame to the panel
+
+        Args:
+            image_vis (np.ndarray): complete image panel
+            semantic_frame (np.ndarray): egocentric semantic frame
+            palette (List): list of rgb colors of size [#colors * 3]
+
+        Returns:
+            image_vis (np.ndarray): complete image panel
+        """
+        rgb_frame = semantic_frame[:, :, [2, 1, 0]]
+        image_vis[V.Y1 : V.Y2, V.FIRST_RGB_X1 : V.FIRST_RGB_X2] = cv2.resize(
+            rgb_frame, (V.FIRST_PERSON_W, V.HEIGHT)
+        )
+        if semantic_frame.shape[2] > 3:
+            # Semantic categories
+            first_person_semantic_map_vis = self.get_semantic_vis(
+                semantic_frame[:, :, 3] + PI.SEM_START, palette, rgb_frame
+            )
+            # First-person semantic frame
+            image_vis[V.Y1 : V.Y2, V.FIRST_SEM_X1 : V.FIRST_SEM_X2] = cv2.resize(
+                first_person_semantic_map_vis,
+                (V.FIRST_PERSON_W, V.HEIGHT),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        return image_vis
+
+    def _visualize_instance_counts(
+        self, image_vis: np.ndarray, instance_memory: InstanceMemory
+    ):
+        """
+        Add instance counts to the panel
+
+        Args:
+            instance_memory (InstanceMemory): memory of all instances and views seen so far
+            image_vis (np.ndarray): The image panel before adding instances
+
+        Returns:
+            image_vis (np.ndarray): The image panel after adding instances
+        '"""
+        num_instances_per_category = defaultdict(int)
+        num_views_per_instance = defaultdict(list)
+        for instance_id, instance in instance_memory.instance_views[0].items():
+            num_instances_per_category[instance.category_id.item()] += 1
+            num_views_per_instance[instance.category_id.item()].append(
+                len(instance.instance_views)
+            )
+        text = "Instance counts"
+        offset = 48
+        y_pos = offset
+
+        for index, count in num_instances_per_category.items():
+            if count > 0:
+                text = f"{self.semantic_category_mapping.goal_id_to_goal_name[index]}: {num_views_per_instance[index]} views"
+                image_vis = self._put_text_on_image(
+                    image_vis,
+                    text,
+                    V.THIRD_PERSON_X1,
+                    y_pos,
+                    V.THIRD_PERSON_W,
+                    V.TOP_PADDING,
+                )
+                y_pos += offset
+        return image_vis
 
     def _put_text_on_image(
         self,
@@ -417,48 +554,61 @@ class Visualizer:
             cv2.LINE_AA,
         )
 
-    def _init_vis_image(self, goal_name: str):
-        vis_image = np.ones((V.IMAGE_HEIGHT, V.IMAGE_WIDTH, 3)).astype(np.uint8) * 255
+    def _init_vis_image(self, goal_name: str, rl_obs_frame: None):
+        width = V.IMAGE_WIDTH
+
+        # if rl_obs_frame is passed, update width
+        if self.show_rl_obs and rl_obs_frame is not None:
+            # find the width of the frame such that height is V.HEIGHT
+            rl_obs_frame_width = int(
+                rl_obs_frame.shape[1] * V.HEIGHT / rl_obs_frame.shape[0]
+            )
+            width = width - V.TOP_DOWN_W - V.THIRD_PERSON_W + rl_obs_frame_width
+        vis_image = np.ones((V.IMAGE_HEIGHT, width, 3)).astype(np.uint8) * 255
 
         vis_image = self._put_text_on_image(
             vis_image, goal_name, V.LEFT_PADDING, 0, 2 * V.FIRST_PERSON_W, V.TOP_PADDING
         )
 
-        text = "Predicted Semantic Map"
-        vis_image = self._put_text_on_image(
-            vis_image, text, V.TOP_DOWN_X1, 0, V.TOP_DOWN_W, V.TOP_PADDING
-        )
+        # the outlines are set for the standard layout (with debug RL frame)
+        if rl_obs_frame is None:
+            text = "Predicted Semantic Map"
+            vis_image = self._put_text_on_image(
+                vis_image, text, V.TOP_DOWN_X1, 0, V.TOP_DOWN_W, V.TOP_PADDING
+            )
 
-        text = "Third person image"
-        vis_image = self._put_text_on_image(
-            vis_image, text, V.THIRD_PERSON_X1, 0, V.THIRD_PERSON_W, V.TOP_PADDING
-        )
+            text = "Instance counts"
+            vis_image = self._put_text_on_image(
+                vis_image, text, V.THIRD_PERSON_X1, 0, V.THIRD_PERSON_W, V.TOP_PADDING
+            )
 
-        # Draw outlines
-        color = (100, 100, 100)
-        for y in [V.Y1 - 1, V.Y2]:
-            for x_start, x_len in [
-                (V.FIRST_RGB_X1, V.FIRST_PERSON_W),
-                (V.FIRST_SEM_X1, V.FIRST_PERSON_W),
-                (V.TOP_DOWN_X1, V.TOP_DOWN_W),
-                (V.THIRD_PERSON_X1, V.THIRD_PERSON_W),
+            # Draw outlines
+            color = (100, 100, 100)
+            for y in [V.Y1 - 1, V.Y2]:
+                for x_start, x_len in [
+                    (V.FIRST_RGB_X1, V.FIRST_PERSON_W),
+                    (V.FIRST_SEM_X1, V.FIRST_PERSON_W),
+                    (V.TOP_DOWN_X1, V.TOP_DOWN_W),
+                    (V.THIRD_PERSON_X1, V.THIRD_PERSON_W),
+                ]:
+                    vis_image[y, x_start - 1 : x_start + x_len] = color
+
+            for x in [
+                V.FIRST_RGB_X1 - 1,
+                V.FIRST_RGB_X2,
+                V.FIRST_SEM_X1 - 1,
+                V.FIRST_SEM_X2,
+                V.TOP_DOWN_X1 - 1,
+                V.TOP_DOWN_X2,
+                V.THIRD_PERSON_X1 - 1,
+                V.THIRD_PERSON_X2,
             ]:
-                vis_image[y, x_start - 1 : x_start + x_len] = color
-
-        for x in [
-            V.FIRST_RGB_X1 - 1,
-            V.FIRST_RGB_X2,
-            V.FIRST_SEM_X1 - 1,
-            V.FIRST_SEM_X2,
-            V.TOP_DOWN_X1 - 1,
-            V.TOP_DOWN_X2,
-            V.THIRD_PERSON_X1 - 1,
-            V.THIRD_PERSON_X2,
-        ]:
-            vis_image[V.Y1 - 1 : V.Y2, x] = color
+                vis_image[V.Y1 - 1 : V.Y2, x] = color
 
         # Draw legend
-        if os.path.exists(self.semantic_category_mapping.categories_legend_path):
+        if self.semantic_category_mapping is not None and os.path.exists(
+            self.semantic_category_mapping.categories_legend_path
+        ):
             legend = cv2.imread(self.semantic_category_mapping.categories_legend_path)
             lx, ly, _ = legend.shape
             vis_image[

@@ -31,18 +31,25 @@ class HeuristicPlacePolicy(nn.Module):
     Policy to place object on end receptacle using depth and point-cloud-based heuristics. Objects will be placed nearby, on top of the surface, based on point cloud data. Requires segmentation to work properly.
     """
 
+    # TODO: read these values from the robot kinematic model
+    look_at_ee = np.array([-np.pi / 2, -np.pi / 4])
+    max_arm_height = 1.2
+
     def __init__(
         self,
         config,
         device,
-        placement_drop_distance: float = 0.25,
+        placement_drop_distance: float = 0.4,
         debug_visualize_xyz: bool = False,
+        verbose: bool = False,
     ):
         """
         Parameters:
             config
             device
             placement_drop_distance: distance from placement point that we add as a margin
+            debug_visualize_xyz: whether to display point clouds for debugging
+            verbose: whether to print debug statements
         """
         super().__init__()
         self.timestep = 0
@@ -51,6 +58,75 @@ class HeuristicPlacePolicy(nn.Module):
         self.debug_visualize_xyz = debug_visualize_xyz
         self.erosion_kernel = np.ones((5, 5), np.uint8)
         self.placement_drop_distance = placement_drop_distance
+        self.verbose = verbose
+
+    def reset(self):
+        self.timestep = 0
+
+    def get_target_point_cloud_base_coords(
+        self,
+        obs: Observations,
+        target_mask: np.ndarray,
+        arm_reachability_check: bool = False,
+    ):
+        """Get point cloud coordinates in base frame"""
+        goal_rec_depth = torch.tensor(
+            obs.depth, device=self.device, dtype=torch.float32
+        ).unsqueeze(0)
+
+        camera_matrix = du.get_camera_matrix(
+            self.config.ENVIRONMENT.frame_width,
+            self.config.ENVIRONMENT.frame_height,
+            self.config.ENVIRONMENT.hfov,
+        )
+        # Get object point cloud in camera coordinates
+        pcd_camera_coords = du.get_point_cloud_from_z_t(
+            goal_rec_depth, camera_matrix, self.device, scale=self.du_scale
+        )
+
+        # get point cloud in base coordinates
+        camera_pose = np.expand_dims(obs.camera_pose, 0)
+        angles = [tra.euler_from_matrix(p[:3, :3], "rzyx") for p in camera_pose]
+        tilt = angles[0][1]  # [0][1]
+
+        # Agent height comes from the environment config
+        agent_height = torch.tensor(camera_pose[0, 2, 3], device=self.device)
+
+        # Object point cloud in base coordinates
+        pcd_base_coords = du.transform_camera_view_t(
+            pcd_camera_coords, agent_height, np.rad2deg(tilt), self.device
+        )
+
+        if self.debug_visualize_xyz:
+            # Remove invalid points from the mask
+            xyz = (
+                pcd_base_coords[0]
+                .cpu()
+                .numpy()
+                .reshape(-1, 3)[target_mask.reshape(-1), :]
+            )
+            from home_robot.utils.point_cloud import show_point_cloud
+
+            rgb = (obs.rgb).reshape(-1, 3) / 255.0
+            show_point_cloud(xyz, rgb, orig=np.zeros(3))
+
+        # Whether or not I can extend the robot's arm in order to reach each point
+        if arm_reachability_check:
+            # filtering out unreachable points based on Y and Z coordinates of voxels (Z is up)
+            height_reachable_mask = (pcd_base_coords[0, :, :, 2] < agent_height).to(int)
+            height_reachable_mask = torch.stack([height_reachable_mask] * 3, axis=-1)
+            pcd_base_coords = pcd_base_coords * height_reachable_mask
+
+            length_reachable_mask = (pcd_base_coords[0, :, :, 1] < agent_height).to(int)
+            length_reachable_mask = torch.stack([length_reachable_mask] * 3, axis=-1)
+            pcd_base_coords = pcd_base_coords * length_reachable_mask
+
+        non_zero_mask = torch.stack(
+            [torch.from_numpy(target_mask).to(self.device)] * 3, axis=-1
+        )
+        pcd_base_coords = pcd_base_coords * non_zero_mask
+
+        return pcd_base_coords[0]
 
     def get_receptacle_placement_point(
         self,
@@ -86,77 +162,16 @@ class HeuristicPlacePolicy(nn.Module):
             cv2.imwrite(f"{self.end_receptacle}_semantic.png", goal_rec_mask * 255)
 
         if not goal_rec_mask.any():
-            print("End receptacle not visible.")
+            if self.verbose:
+                print("End receptacle not visible.")
             return None
         else:
             rgb_vis = obs.rgb
-            goal_rec_depth = torch.tensor(
-                obs.depth, device=self.device, dtype=torch.float32
-            ).unsqueeze(0)
-
-            camera_matrix = du.get_camera_matrix(
-                self.config.ENVIRONMENT.frame_width,
-                self.config.ENVIRONMENT.frame_height,
-                self.config.ENVIRONMENT.hfov,
+            pcd_base_coords = self.get_target_point_cloud_base_coords(
+                obs, goal_rec_mask, arm_reachability_check=arm_reachability_check
             )
-            # Get object point cloud in camera coordinates
-            pcd_camera_coords = du.get_point_cloud_from_z_t(
-                goal_rec_depth, camera_matrix, self.device, scale=self.du_scale
-            )
-
-            # get point cloud in base coordinates
-            camera_pose = np.expand_dims(obs.camera_pose, 0)
-            angles = [tra.euler_from_matrix(p[:3, :3], "rzyx") for p in camera_pose]
-            tilt = angles[0][1]  # [0][1]
-
-            # Agent height comes from the environment config
-            agent_height = torch.tensor(camera_pose[0, 2, 3], device=self.device)
-
-            # Object point cloud in base coordinates
-            pcd_base_coords = du.transform_camera_view_t(
-                pcd_camera_coords, agent_height, np.rad2deg(tilt), self.device
-            )
-
-            if self.debug_visualize_xyz:
-                # Remove invalid points from the mask
-                xyz = (
-                    pcd_base_coords[0]
-                    .cpu()
-                    .numpy()
-                    .reshape(-1, 3)[goal_rec_mask.reshape(-1), :]
-                )
-                from home_robot.utils.point_cloud import show_point_cloud
-
-                rgb = (obs.rgb).reshape(-1, 3) / 255.0
-                show_point_cloud(xyz, rgb, orig=np.zeros(3))
-
-            # Whether or not I can extend the robot's arm in order to reach each point
-            if arm_reachability_check:
-                # filtering out unreachable points based on Y and Z coordinates of voxels (Z is up)
-                height_reachable_mask = (pcd_base_coords[0, :, :, 2] < agent_height).to(
-                    int
-                )
-                height_reachable_mask = torch.stack(
-                    [height_reachable_mask] * 3, axis=-1
-                )
-                pcd_base_coords = pcd_base_coords * height_reachable_mask
-
-                length_reachable_mask = (pcd_base_coords[0, :, :, 1] < agent_height).to(
-                    int
-                )
-                length_reachable_mask = torch.stack(
-                    [length_reachable_mask] * 3, axis=-1
-                )
-                pcd_base_coords = pcd_base_coords * length_reachable_mask
-
-            non_zero_mask = torch.stack(
-                [torch.from_numpy(goal_rec_mask).to(self.device)] * 3, axis=-1
-            )
-            pcd_base_coords = pcd_base_coords * non_zero_mask
-
             ## randomly sampling NUM_POINTS_TO_SAMPLE of receptacle point cloud – to choose for placement
-
-            reachable_point_cloud = pcd_base_coords[0].cpu().numpy()
+            reachable_point_cloud = pcd_base_coords.cpu().numpy()
             flat_array = reachable_point_cloud.reshape(-1, 3)
 
             # find the indices of the non-zero elements in the first two dimensions of the matrix
@@ -169,14 +184,15 @@ class HeuristicPlacePolicy(nn.Module):
                 )
                 for index in nonzero_indices
             ]
+
             # select a random subset of the non-zero indices
             random_indices = random.sample(
                 nonzero_tuples, min(NUM_POINTS_TO_SAMPLE, len(nonzero_tuples))
             )
 
-            x_values = pcd_base_coords[0, :, :, 0]
-            y_values = pcd_base_coords[0, :, :, 1]
-            z_values = pcd_base_coords[0, :, :, 2]
+            x_values = pcd_base_coords[:, :, 0]
+            y_values = pcd_base_coords[:, :, 1]
+            z_values = pcd_base_coords[:, :, 2]
 
             max_surface_points = 0
             # max_height = 0
@@ -185,7 +201,7 @@ class HeuristicPlacePolicy(nn.Module):
 
             ## iterating through all randomly selected voxels and choosing one with most XY neighboring surface area within some height threshold
             for ind in random_indices:
-                sampled_voxel = pcd_base_coords[0, ind[0], ind[1]]
+                sampled_voxel = pcd_base_coords[ind[0], ind[1]]
                 sampled_voxel_x, sampled_voxel_y, sampled_voxel_z = (
                     sampled_voxel[0],
                     sampled_voxel[1],
@@ -259,8 +275,10 @@ class HeuristicPlacePolicy(nn.Module):
             best_voxel[2] += self.placement_drop_distance
 
             if self.debug_visualize_xyz:
+                from home_robot.utils.point_cloud import show_point_cloud
+
                 show_point_cloud(
-                    pcd_base_coords[0].cpu().numpy(),
+                    pcd_base_coords.cpu().numpy(),
                     rgb=obs.rgb / 255.0,
                     orig=best_voxel.cpu().numpy(),
                 )
@@ -282,7 +300,6 @@ class HeuristicPlacePolicy(nn.Module):
             vis_inputs: dictionary containing extra info for visualizations
         """
 
-        self.timestep = self.timestep
         turn_angle = self.config.ENVIRONMENT.turn_angle
         fwd_step_size = self.config.ENVIRONMENT.forward
 
@@ -292,10 +309,11 @@ class HeuristicPlacePolicy(nn.Module):
             found = self.get_receptacle_placement_point(obs, vis_inputs)
 
             if found is None:
-                print("Receptacle not visible. Execute hardcoded place.")
+                if self.verbose:
+                    print("Receptacle not visible. Execute hardcoded place.")
                 self.total_turn_and_forward_steps = 0
                 self.initial_orient_num_turns = -1
-                self.fall_wait_steps = 5
+                self.fall_wait_steps = 0
                 self.t_go_to_top = 1
                 self.t_extend_arm = 2
                 self.t_release_object = 3
@@ -331,7 +349,7 @@ class HeuristicPlacePolicy(nn.Module):
                 self.total_turn_and_forward_steps = (
                     self.forward_steps + self.initial_orient_num_turns
                 )
-                self.fall_wait_steps = 5
+                self.fall_wait_steps = 0
                 self.t_go_to_top = self.total_turn_and_forward_steps + 1
                 self.t_go_to_place = self.total_turn_and_forward_steps + 2
                 self.t_release_object = self.total_turn_and_forward_steps + 3
@@ -341,32 +359,33 @@ class HeuristicPlacePolicy(nn.Module):
                 self.t_done_waiting = (
                     self.total_turn_and_forward_steps + 5 + self.fall_wait_steps
                 )
+                if self.verbose:
+                    print("-" * 20)
+                    print(f"Turn to orient for {self.initial_orient_num_turns} steps.")
+                    print(f"Move forward for {self.forward_steps} steps.")
 
-                print("-" * 20)
-                print(f"Turn to orient for {self.initial_orient_num_turns} steps.")
-                print(f"Move forward for {self.forward_steps} steps.")
-
-        print("-" * 20)
-        print("Timestep", self.timestep)
+        if self.verbose:
+            print("-" * 20)
+            print("Timestep", self.timestep)
         if self.timestep < self.initial_orient_num_turns:
             if self.orient_turn_direction == -1:
-                print("[Placement] Turning right to orient towards object")
                 action = DiscreteNavigationAction.TURN_RIGHT
             if self.orient_turn_direction == +1:
-                print("[Placement] Turning left to orient towards object")
                 action = DiscreteNavigationAction.TURN_LEFT
+            if self.verbose:
+                print("[Placement] Turning to orient towards object")
         elif self.timestep < self.total_turn_and_forward_steps:
-            print("[Placement] Moving forward")
+            if self.verbose:
+                print("[Placement] Moving forward")
             action = DiscreteNavigationAction.MOVE_FORWARD
         elif self.timestep == self.total_turn_and_forward_steps:
             action = DiscreteNavigationAction.MANIPULATION_MODE
-            print("[Placement] Aligning camera to arm")
         elif self.timestep == self.t_go_to_top:
             # We should move the arm back and retract it to make sure it does not hit anything as it moves towards the target position
-            print("[Placement] Raising the arm before placement.")
             action = self._retract(obs)
         elif self.timestep == self.t_go_to_place:
-            print("[Placement] Move arm into position")
+            if self.verbose:
+                print("[Placement] Move arm into position")
             placement_height, placement_extension = (
                 self.placement_voxel[2],
                 self.placement_voxel[1],
@@ -394,8 +413,9 @@ class HeuristicPlacePolicy(nn.Module):
 
             delta_gripper_yaw = delta_heading / 90 - HARDCODED_YAW_OFFSET
 
-            print("[Placement] Delta arm extension:", delta_arm_ext)
-            print("[Placement] Delta arm lift:", delta_arm_lift)
+            if self.verbose:
+                print("[Placement] Delta arm extension:", delta_arm_ext)
+                print("[Placement] Delta arm lift:", delta_arm_lift)
             joints = np.array(
                 [delta_arm_ext]
                 + [0] * 3
@@ -403,26 +423,38 @@ class HeuristicPlacePolicy(nn.Module):
                 + [delta_gripper_yaw]
                 + [0] * 4
             )
+            joints = self._look_at_ee(joints)
             action = ContinuousFullBodyAction(joints)
         elif self.timestep == self.t_release_object:
             # desnap to drop the object
-            print("[Placement] Desnapping object")
             action = DiscreteNavigationAction.DESNAP_OBJECT
         elif self.timestep == self.t_lift_arm:
-            print("[Placement] Lifting the arm after placement.")
             action = self._lift(obs)
         elif self.timestep == self.t_retract_arm:
-            print("[Placement] Retracting the arm after placement.")
             action = self._retract(obs)
         elif self.timestep == self.t_extend_arm:
-            print("[Placement] Extending the arm out for placing.")
             action = DiscreteNavigationAction.EXTEND_ARM
         elif self.timestep <= self.t_done_waiting:
-            print("[Placement] Empty action")  # allow the object to come to rest
+            if self.verbose:
+                print("[Placement] Empty action")  # allow the object to come to rest
             action = DiscreteNavigationAction.EMPTY_ACTION
         else:
-            print("[Placement] Stopping")
+            if self.verbose:
+                print("[Placement] Stopping")
             action = DiscreteNavigationAction.STOP
+
+        debug_texts = {
+            self.total_turn_and_forward_steps: "[Placement] Aligning camera to arm",
+            self.t_go_to_top: "[Placement] Raising the arm before placement.",
+            self.t_go_to_place: "[Placement] Move arm into position",
+            self.t_release_object: "[Placement] Desnapping object",
+            self.t_lift_arm: "[Placement] Lifting the arm after placement.",
+            self.t_retract_arm: "[Placement] Retracting the arm after placement.",
+            self.t_extend_arm: "[Placement] Extending the arm out for placing.",
+            self.t_done_waiting: "[Placement] Empty action",
+        }
+        if self.verbose and self.timestep in debug_texts:
+            print(debug_texts[self.timestep])
 
         self.timestep += 1
         return action, vis_inputs
@@ -434,10 +466,17 @@ class HeuristicPlacePolicy(nn.Module):
         # We take the lift position = 1
         current_arm_lift = obs.joint[4]
         # Target lift is 0.99
-        lift_delta = 1.2 - current_arm_lift
+        lift_delta = self.max_arm_height - current_arm_lift
         joints[4] = lift_delta
+        joints = self._look_at_ee(joints)
         action = ContinuousFullBodyAction(joints)
         return action
+
+    def _look_at_ee(self, joints: np.ndarray) -> np.ndarray:
+        """Make sure it's actually looking at the end effector."""
+        joints[8] = self.look_at_ee[0]
+        joints[9] = self.look_at_ee[1]
+        return joints
 
     def _retract(self, obs: Observations) -> ContinuousFullBodyAction:
         """Compute a high-up retracted position to avoid collisions"""
@@ -446,10 +485,11 @@ class HeuristicPlacePolicy(nn.Module):
         # We take the lift position = 1
         current_arm_lift = obs.joint[4]
         # Target lift is 0.99
-        lift_delta = 1.2 - current_arm_lift
+        lift_delta = self.max_arm_height - current_arm_lift
         # Arm should be fully retracted
         arm_delta = -1 * np.sum(obs.joint[:4])
         joints[0] = arm_delta
         joints[4] = lift_delta
+        joints = self._look_at_ee(joints)
         action = ContinuousFullBodyAction(joints)
         return action

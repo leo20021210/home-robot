@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+
 from abc import abstractmethod
 from typing import Any, Dict, Optional, TypeVar
 
@@ -89,7 +95,7 @@ class HabitatEnv(home_robot.core.abstract_env.Env):
     def action_space(self) -> spaces.Space[ActType]:
         return self.habitat_env.action_space
 
-    def current_episode(self, all_info: bool = False) -> int:
+    def current_episode(self, all_info: bool = True) -> int:
         return self.habitat_env.current_episode(all_info)
 
     @property

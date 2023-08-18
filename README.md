@@ -9,21 +9,20 @@
 
 Your open-source robotic mobile manipulation stack!
 
-Check out the [Neurips 2023 HomeRobot Open-Vocabulary Mobile Manipulation Challenge!](https://aihabitat.org/challenge/2023_homerobot_ovmm/)
-
-_CURRENTLY UNDER ACTIVE DEVELOPMENT! PLEASE CONTACT US IF YOU ARE INTERESTED IN USING THIS LIBRARY!_
-
-_FULL RELEASE WILL HAPPEN MID-JUNE!_
-
 HomeRobot lets you get started running a range of robotics tasks on a low-cost mobile manipulator, starting with _Open Vocabulary Mobile Manipulation_, or OVMM. OVMM is a challenging task which means that, in an unknown environment, a robot must:
   - Explore its environment
   - Find an object
   - Find a receptacle -- a location on which it must place this object
   - Put the object down on the receptacle.
 
+Check out the [Neurips 2023 HomeRobot Open-Vocabulary Mobile Manipulation Challenge!](https://aihabitat.org/challenge/2023_homerobot_ovmm/)
+
+When you're ready, 
+follow [these instructions to participate](docs/challenge.md).
+
 ## Core Concepts
 
-This package assumes you have a low-cost mobile robot with limited compute -- initially a [Hello Robot Stretch](hello-robot.com/) -- and a "workstation" with more GPU compute. Both are assumed to be running on the same network.
+This package assumes you have a low-cost mobile robot with limited compute -- initially a [Hello Robot Stretch](https://hello-robot.com/stretch-2) -- and a "workstation" with more GPU compute. Both are assumed to be running on the same network.
 
 This is the recommended workflow for hardware robots:
   - Turn on your robot; for the Stretch, run `stretch_robot_home.py` to get it ready to use.
@@ -31,7 +30,7 @@ This is the recommended workflow for hardware robots:
   - If desired, run [rviz](http://wiki.ros.org/rviz) on the workstation to see what the robot is seeing.
   - Start running your AI code on the workstation - For example, you can run `python projects/stretch_grasping/eval_episode.py` to run the OVMM task.
 
-We provide a couple connections for useful perception libraries like [Detic](https://github.com/facebookresearch/Detic) and [Contact Graspnet](https://github.com/NVlabs/contact_graspnet), which you can then use as a part of your methods.
+We provide a couple connections for useful perception libraries like [Detic](https://github.com/facebookresearch/Detic), [Grounded-SAM](https://github.com/IDEA-Research/Grounded-Segment-Anything) and [Contact Graspnet](https://github.com/NVlabs/contact_graspnet), which you can then use as a part of your methods.
 
 ## Installation
 
@@ -52,71 +51,58 @@ roslaunch home_robot_hw startup_stretch_hector_slam.launch
 
 ### Workstation Instructions
 
-To set up your workstation, follow these instructions. We will assume that your system supports CUDA 11.8 or better for pytorch; earlier versions should be fine, but may require some changes to the conda environment.
+To set up your workstation, follow these instructions. HomeRobot requires Python 3.9. These instructions assume that your system supports CUDA 11.7 or better for pytorch; earlier versions should be fine, but may require some changes to the conda environment.
 
 #### 1. Create Your Environment
+
+If necessary, [install mamba](https://mamba.readthedocs.io/en/latest/installation.html) in your base conda environment. Optionally: [install ROS noetic](http://wiki.ros.org/noetic/Installation/Ubuntu) on your workstation.
+
 ```
 # Create a conda env - use the version in home_robot_hw if you want to run on the robot
-# Otherwise, you can use the version in src/home_robot
 mamba env create -n home-robot -f src/home_robot_hw/environment.yml
+
+# Otherwise, use the version in src/home_robot
+mamba env create -n home-robot -f src/home_robot/environment.yml
+
 conda activate home-robot
 ```
 
 This should install pytorch; if you run into trouble, you may need to edit the installation to make sure you have the right CUDA version. See the [pytorch install notes](docs/install_pytorch.md) for more.
 
-#### 2. Install Home Robot Packages
-```
-# Install the core home_robot package
-pip install -e src/home_robot
+Optionally, setup a [catkin workspace](docs/catkin.md) to use improved ROS visualizations.
 
-# Install home_robot_hw
-pip install -e src/home_robot_hw
-```
+#### 2. Run Install Script
 
-_Testing Real Robot Setup:_ Now you can run a couple commands to test your connection. If the `roscore` and the robot controllers are running properly, you can run `rostopic list` and should see a list of topics - streams of information coming from the robot. You can then run RVIZ to visualize the robot sensor output:
+Make sure you have the correct environment variables set: `CUDA_HOME` should point to your cuda install, matching the one used by your python environment. We recommend 11.7, and it's what will be automatically installed above. You can download it from [nvidia's downloads page](https://developer.nvidia.com/cuda-11-7-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu). Download the runfile, and make sure to check the box NOT to install your drivers.
 
+Then make sure the environment variables are set to something reasonable:
 ```
-rviz -d $HOME_ROBOT_ROOT/src/home_robot_hw/launch/mapping_demo.rviz
+HOME_ROBOT_ROOT=$USER/src/home-robot
+CUDA_HOME=/usr/local/cuda-11.7
 ```
 
-#### 3. Hardware Testing
-
-Run the hardware manual test to make sure you can control the robot remotely. Ensure the robot has one meter of free space before running the script.
-
+Finally, you can run the [install script](install_deps.sh) to download submodules, model checkpoints, and build Detic for open-vocabulary object detection:
 ```
-python tests/hw_manual_test.py
-```
-
-Follow the on-screen instructions. The robot should move through a set of configurations.
-
-
-#### 4. Install Detic
-
-Install [detectron2](https://detectron2.readthedocs.io/tutorials/install.html). If you installed our default environment above, you may need to [download CUDA11.7](https://developer.nvidia.com/cuda-11-7-0-download-archive).
+conda activate home-robot
+cd $HOME_ROBOT_ROOT
+./install_deps.sh
 ```
 
-Download Detic checkpoint as per the instructions [on the Detic github page](https://github.com/facebookresearch/Detic):
-```bash
-cd $HOME_ROBOT_ROOT/src/home_robot/home_robot/perception/detection/detic/Detic/
-mkdir models
-wget https://dl.fbaipublicfiles.com/detic/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth -O models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth --no-check-certificate
-```
+If you run into issues, check out the [step-by-step instructions](docs/install_workstation.md).
 
-You should be able to run the Detic demo script as per the Detic instructions to verify your installation was correct:
-```bash
-wget https://web.eecs.umich.edu/~fouhey/fun/desk/desk.jpg
-python demo.py --config-file configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml --input desk.jpg --output out2.jpg --vocabulary custom --custom_vocabulary headphone,webcam,paper,coffe --confidence-threshold 0.3 --opts MODEL.WEIGHTS models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
+
+#### 3. Simulation Setup
+
+To set up the simulation stack with Habitat, train DDPPO skills and run evaluations: see the [installation instructions](src/home_robot_sim/README.md) in `home_robot_sim`. As with other components, the simulation assumes that you have Python 3.9, conda, mamba, and CUDA 11.7 or greater, although other CUDA versions may work.
+
+For more details on the OVMM challenge, see the [Habitat OVMM readme](projects/habitat_ovmm/README.md). You can start by running the [install script](projects/habitat_ovmm/install.sh) to download all the necessary data:
+
+```
+$HOME_ROBOT_ROOT/projects/habitat_ovmm/install.sh
 ```
 
 
-#### 5. Download pretrained skills
-```
-mkdir -p $HOME_ROBOT_ROOT/data/
-cd $HOME_ROBOT_ROOT/data/
-git clone https://huggingface.co/datasets/osmm/checkpoints
-```
-
-#### 6. Run Open Vocabulary Mobile Manipulation on Stretch
+#### 4. Run Open Vocabulary Mobile Manipulation on Stretch
 
 You should then be able to run the Stretch OVMM example.
 
@@ -136,15 +122,8 @@ python src/home_robot_hw/home_robot_hw/nodes/simple_grasp_server.py
 Then you can run the OVMM example script:
 ```
 cd $HOME_ROBOT_ROOT
-python projects/stretch_ovmm/eval_episode.py
+python projects/real_world_ovmm/eval_episode.py
 ```
-
-#### 7. Simulation Setup
-
-To set up the simulation stack with Habitat, see the [installation instructions](src/home_robot_sim/README.md) in `home_robot_sim`. 
-
-For more details on the OVMM challenge, see the [Habitat OVMM readme](projects/stretch_ovmm/README.md).
-
 
 ## Code Contribution
 
@@ -155,6 +134,7 @@ There are two main classes in HomeRobot that you need to be concerned with:
   - *Agents* extend the [abstract Agent class](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/core/abstract_agent.py), which takes in an [observation](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/core/interfaces.py#L95) and produces an [action](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/core/interfaces.py#L50).
 
 Generally, new methods will be implemented as Agents.
+
 
 ### Developing on Hardware
 
@@ -170,7 +150,7 @@ See the robot [hardware development guide](docs/hardware_development.md) for som
 | [home_robot_sim](src/home_robot_sim) | OVMM simulation environment based on [AI Habitat](https://aihabitat.org/) |
 | [home_robot_hw](src/home_robot_hw) | ROS package containing hardware interfaces for the Hello Robot Stretch |
 
-The [home_robot](src/home_robot) package contains embodiment-agnostic agent code, such as our [ObjectNav agent](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/agent/objectnav_agent/objectnav_agent.py) (finds objects in scenes) and our [hierarchical OVMM agent](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/agent/ovmm_agent/ovmm_agent.py). YThese agents can be extended or modified to implement your own solution.
+The [home_robot](src/home_robot) package contains embodiment-agnostic agent code, such as our [ObjectNav agent](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/agent/objectnav_agent/objectnav_agent.py) (finds objects in scenes) and our [hierarchical OVMM agent](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/agent/ovmm_agent/ovmm_agent.py). These agents can be extended or modified to implement your own solution.
 
 Importantly, agents use a fixed set of [interfaces](https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/core/interfaces.py) which are overridden to provide access to 
 
