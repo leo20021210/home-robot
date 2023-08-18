@@ -13,7 +13,7 @@ YAW_TOL = 0.2
 
 if __name__ == "__main__":
     print("Initializing...")
-    robot = StretchClient()
+    robot = StretchClient(init_node = False)
 
     # Reset robot
     print("Resetting robot...")
@@ -32,16 +32,33 @@ if __name__ == "__main__":
     print("Testing robot navigation...")
     robot.switch_to_navigation_mode()
 
+<<<<<<< HEAD
     #print(robot.nav.get_base_pose())
     xyt_goal = [0.25, 0.25, 0.5]
+=======
+    xyt_goal = [0.25, -0.25, -np.pi / 2]
+>>>>>>> 471a2e5b087fb800a63e73366e6dd87b9a90132b
     robot.nav.navigate_to(xyt_goal)
 
+    # Sometimes the robot will time out before done moving.
+    print("Make sure orientation is correct...")
+    for _ in range(3):
+        print("- sending the command again to guard against timeouts...")
+        robot.nav.navigate_to(xyt_goal)
     xyt_curr = robot.nav.get_base_pose()
+<<<<<<< HEAD
     print(xyt_curr, xyt_goal)
     #assert np.allclose(xyt_curr[:2], xyt_goal[:2], atol=POS_TOL)
     #assert np.allclose(xyt_curr[2], xyt_goal[2], atol=YAW_TOL)
     robot.nav.home()
     print(robot.nav.get_base_pose())
+=======
+
+    print("Current orientation:", xyt_curr[2], "goal was", xyt_goal[2])
+    assert np.allclose(xyt_curr[2], xyt_goal[2], atol=YAW_TOL)
+    print("Current location:", xyt_curr[:2], "goal was", xyt_goal[:2])
+    assert np.allclose(xyt_curr[:2], xyt_goal[:2], atol=POS_TOL)
+>>>>>>> 471a2e5b087fb800a63e73366e6dd87b9a90132b
 
     print(f"Confirm that the robot moved to {xyt_goal} (forward left, facing right)")
     input("(press enter to continue)")

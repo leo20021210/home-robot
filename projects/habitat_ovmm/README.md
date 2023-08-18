@@ -9,9 +9,20 @@
 
 ## Dataset Setup
 
-### Scene dataset setup 
+Run `git lfs install` to install Git LFS, which is used to manage the OVMM dataset. Please sign in [here](https://huggingface.co/datasets/hssd/hssd-hab/tree/ovmm) and accept the license for using HSSD scenes.
 
-Please sign in [here](https://huggingface.co/datasets/hssd/hssd-hab/tree/ovmm) and accept the license for using HSSD scenes before proceeding to download them.
+You can then use the following command to download data:
+```
+$HOME_ROBOT_ROOT/projects/habitat_ovmm/install.sh
+```
+
+### Detailed Explanation
+
+If anything goes wrong, you can check out this explanation of the different steps.
+
+#### Scene dataset setup 
+
+Please sign in [here](https://huggingface.co/datasets/hssd/hssd-hab/tree/ovmm) and accept the license for using HSSD scenes before proceeding to download them. You will need your login information to proceed.
 ```
 # Download the scenes
 git submodule update --init data/hssd-hab
@@ -20,7 +31,18 @@ git submodule update --init data/hssd-hab
 git submodule update --init data/objects
 ```
 
-### Download the Episodes
+If this didn't trigger a download of the datasets, you may be running an older version of git. Either upgrade your git version, or try the following commands:
+```
+cd data/hssd-hab
+git lfs pull
+cd -
+
+cd data/objects
+git lfs pull
+cd -
+```
+
+#### Download the Episodes
 
 These describe where objects are and where the robot starts:
 
@@ -28,8 +50,15 @@ These describe where objects are and where the robot starts:
 git submodule update --init data/datasets/ovmm
 ```
 
+Similar to the scene dataset setup, you may need to run the following commands if this didn't download the episodes:
+```
+cd data/datasets/ovmm
+git lfs pull
+cd -
+```
 
-### Download the Robot Model
+
+#### Download the Robot Model
 
 Download and unzip the robot model:
 ```
@@ -44,7 +73,7 @@ unzip hab_stretch_v1.0.zip
 
 Run
 ```
-python projects/habitat_ovmm/eval_dataset.py
+python projects/habitat_ovmm/eval_baselines_agent.py --env_config projects/habitat_ovmm/configs/env/hssd_demo.yaml
 ```
 
 Results are saved to `datadump/images/eval_hssd/`.
@@ -103,27 +132,35 @@ python -u -m habitat_baselines.run \
 
 ## Running evaluations
 
+
+### Evaluate with ground truth semantics
 ```
-cd /path/to/home-robot
-
-
 # Evaluation on complete episode dataset with GT semantics
-python projects/habitat_ovmm/eval_dataset.py
+python projects/habitat_ovmm/eval_baselines_agent.py
 
-# Evaluation on complete episode dataset with DETIC
-Ensure `GROUND_TRUTH_SEMANTICS:0` in `configs/agent/hssd_eval.yaml` before running the above command
-
-# Evaluation on specific episodes
-python projects/habitat_ovmm/eval_dataset.py habitat.dataset.episode_ids="[151,182]"
-
-# Evaluating all baseline variants
-# 1. First generate all possible configs using the base config `configs/agent/hssd_eval.yaml`. Configs will be saved under `projects/habitat_ovmm/configs/agent/generated`
-python projects/habitat_ovmm/scripts/gen_configs.py
-
-# 2. Run evaluation using the generated config files
-python projects/habitat_ovmm/eval_dataset.py --baseline_config_path projects/habitat_ovmm/configs/agent/generated/<dir_name>/<manip>_m_<nav>_n_<perception><viz?>.yaml
-Here <manip>/<nav> are to be set to 'h' or 'r' for heuristic and RL skills respectively. <perception> is one of 'gt'/'detic'. Append <viz?>='_viz' for saving images.
-
+# Print out the metrics
+python projects/habitat_ovmm/scripts/summarize_metrics.py
 ```
+
+### Evaluate with DETIC
+Ensure `GROUND_TRUTH_SEMANTICS:0` in `configs/env/hssd_eval.yaml` before running the above command
+
+### Evaluate on specific episodes
+```
+python projects/habitat_ovmm/eval_baselines_agent.py habitat.dataset.episode_ids="[151,182]"
+```
+
+### Evaluate all baseline variants
+1. First generate all possible configs using the base config `configs/agent/hssd_eval.yaml`. Configs will be saved under `projects/habitat_ovmm/configs/agent/generated`
+```
+python projects/habitat_ovmm/scripts/gen_configs.py
+```
+
+2. Run evaluation using the generated config files
+```
+python projects/habitat_ovmm/eval_baselines_agent.py --baseline_config_path projects/habitat_ovmm/configs/agent/generated/<dir_name>/<manip>_m_<nav>_n_<perception><viz?>.yaml
+```
+
+Here `<manip>/<nav>` are to be set to 'h' or 'r' for heuristic and RL skills respectively. `<perception>` is one of 'gt'/'detic'. Append `<viz?>=_viz` for saving images.
 
 In case you run into issues, please prepend your python command with `HABITAT_ENV_DEBUG=1` to get a better error message.

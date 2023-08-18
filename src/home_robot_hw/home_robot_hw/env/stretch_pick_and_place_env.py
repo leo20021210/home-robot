@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+
 import json
 import os
 import pickle
@@ -23,6 +29,7 @@ from home_robot.motion.stretch import (
     STRETCH_PREGRASP_Q,
 )
 from home_robot.utils.geometry import xyt2sophus
+from home_robot_hw.constants import relative_resting_position
 from home_robot_hw.env.stretch_abstract_env import StretchEnv
 from home_robot_hw.env.visualizer import Visualizer
 from home_robot_hw.remote import StretchClient
@@ -65,6 +72,7 @@ class StretchPickandPlaceEnv(StretchEnv):
         self.task_info = {}
         self.prev_obs = None
         self.prev_grasp_success = False
+        self._gripper_state = False
 
         with open(cat_map_file) as f:
             self.category_map = json.load(f)
@@ -99,19 +107,29 @@ class StretchPickandPlaceEnv(StretchEnv):
         # Wait for the robot
         self.robot.wait()
 
-    def reset(self, goal_find: str, goal_obj: str, goal_place: str):
-        """Reset the robot and prepare to run a trial. Make sure we have images and up to date state info."""
-        self.set_goal(goal_find, goal_obj, goal_place)
+    def reset(
+        self,
+        goal_find: str,
+        goal_obj: str,
+        goal_place: str,
+        set_goal: bool = True,
+        open_gripper: bool = True,
+    ):
+        """Reset the robot and prepare to run a trial. Make sure we have images and up to date
+        state info."""
+        if set_goal:
+            self.set_goal(goal_find, goal_obj, goal_place)
         rospy.sleep(0.5)  # Make sure we have time to get ROS messages
         self.robot.wait()
         self._episode_start_pose = xyt2sophus(self.robot.nav.get_base_pose())
         if self.visualizer is not None:
             self.visualizer.reset()
 
-        # Make sure the gripper is open and ready
-        if not self.robot.in_manipulation_mode():
-            self.robot.switch_to_manipulation_mode()
-        self.robot.manip.open_gripper()
+        if open_gripper:
+            # Make sure the gripper is open and ready
+            if not self.robot.in_manipulation_mode():
+                self.robot.switch_to_manipulation_mode()
+            self.robot.manip.open_gripper()
 
         # Switch control mode on the robot to nav
         # Also set the robot's head into "navigation" mode - facing forward
@@ -284,30 +302,45 @@ class StretchPickandPlaceEnv(StretchEnv):
             if not self.robot.in_manipulation_mode():
                 self.robot.switch_to_manipulation_mode()
             self.robot.manip.close_gripper()
+            self._gripper_state = True
         elif gripper_action < 0:
             # Open the gripper
             if not self.robot.in_manipulation_mode():
                 self.robot.switch_to_manipulation_mode()
             self.robot.manip.open_gripper()
+            self._gripper_state = False
         else:
             # If the gripper action was zero, do nothing!
             pass
 
-    def set_goal(self, goal_find: str, goal_obj: str, goal_place: str):
+    def set_goal(
+        self,
+        goal_find: str,
+        goal_obj: str,
+        goal_place: str,
+        check_receptacles=True,
+    ):
         """Set the goal class as a string. Goal should be an object class we want to pick up."""
-        recep_name_map = self.category_map["recep_category_to_recep_category_id"]
-        for goal in [goal_find, goal_place]:
-            if goal not in recep_name_map:
-                raise RuntimeError(
-                    f"Receptacle goal not supported: {goal} not in {str(list(recep_name_map.keys()))}"
-                )
+        if check_receptacles:
+            recep_name_map = self.category_map["recep_category_to_recep_category_id"]
+            for goal in [goal_find, goal_place]:
+                if goal not in recep_name_map:
+                    raise RuntimeError(
+                        f"Receptacle goal not supported: {goal} not in {str(list(recep_name_map.keys()))}"
+                    )
+        else:
+            recep_name_map = None
         self.task_info = {
             "object_name": goal_obj,
             "start_recep_name": goal_find,
             "place_recep_name": goal_place,
             "goal_name": f"{goal_obj} from {goal_find} to {goal_place}",
-            "start_receptacle": recep_name_map[goal_find],
-            "goal_receptacle": recep_name_map[goal_place],
+            "start_receptacle": recep_name_map[goal_find]
+            if recep_name_map is not None
+            else -1,
+            "goal_receptacle": recep_name_map[goal_place]
+            if recep_name_map is not None
+            else -1,
             # # To be populated by the agent
             "recep_idx": -1,
             "semantic_max_val": -1,
@@ -363,10 +396,9 @@ class StretchPickandPlaceEnv(StretchEnv):
             gps=gps,
             compass=np.array([theta]),
             task_observations=self.task_info,
-            # camera_pose=self.get_camera_pose_matrix(rotated=True),
             camera_pose=self.robot.head.get_pose(rotated=True),
             joint=self.robot.model.config_to_hab(joint_positions),
-            relative_resting_position=np.array([0.3878479, 0.12924957, 0.4224413]),
+            relative_resting_position=relative_resting_position,
         )
         obs.task_observations["prev_grasp_success"] = np.array(
             [self.prev_grasp_success], np.float32
@@ -375,18 +407,11 @@ class StretchPickandPlaceEnv(StretchEnv):
             "in_manipulation_mode"
         ] = self.robot.in_manipulation_mode()
         obs.task_observations["in_navigation_mode"] = self.robot.in_navigation_mode()
+        obs.task_observations[
+            "base_camera_pose"
+        ] = self.robot.head.get_pose_in_base_coords(rotated=True)
+        obs.task_observations["gripper-state"] = self._gripper_state
 
-        # TODO: remove debug code
-        # debug_rgb_bgr = False
-        # if debug_rgb_bgr:
-        #     import matplotlib.pyplot as plt
-
-        #     plt.figure()
-        #     plt.subplot(121)
-        #     plt.imshow(obs.rgb)
-        #     plt.subplot(122)
-        #     plt.imshow(obs.task_observations["semantic_frame"])
-        #     plt.show()
         self.prev_obs = obs
         return obs
 
