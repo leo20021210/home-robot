@@ -33,7 +33,7 @@ from home_robot.mapping.semantic.categorical_2d_semantic_map_state import (
     Categorical2DSemanticMapState,
 )
 from home_robot.mapping.semantic.instance_tracking_modules import InstanceMemory
-from home_robot.perception.detection.detic.detic_perception import DeticPerception
+#from home_robot.perception.detection.detic.detic_perception import DeticPerception
 
 # Semantic segmentation categories predicted from frames and projected in the map
 coco_categories = [
@@ -278,21 +278,22 @@ def main(input_trajectory_dir: str, output_visualization_dir: str, legend_path: 
         "other",
     ]
     num_sem_categories = len(categories) - 1
-    segmentation = DeticPerception(
-        vocabulary="custom",
-        custom_vocabulary=",".join(categories),
-        sem_gpu_id=0,
-    )
-    observations = [
-        segmentation.predict(obs, depth_threshold=None) for obs in observations
-    ]
-    for obs in observations:
-        obs.semantic[obs.semantic == 0] = len(categories) - 1
-        obs.semantic = obs.semantic - 1
-        obs.task_observations["instance_map"] += 1
-        obs.task_observations["instance_map"] = obs.task_observations[
-            "instance_map"
-        ].astype(int)
+    print(observations[0].shape)
+    #segmentation = DeticPerception(
+    #    vocabulary="custom",
+    #    custom_vocabulary=",".join(categories),
+    #    sem_gpu_id=0,
+    #)
+    #observations = [
+    #    segmentation.predict(obs, depth_threshold=None) for obs in observations
+    #]
+    #for obs in observations:
+    #    obs.semantic[obs.semantic == 0] = len(categories) - 1
+    #    obs.semantic = obs.semantic - 1
+    #    obs.task_observations["instance_map"] += 1
+    #    obs.task_observations["instance_map"] = obs.task_observations[
+    #        "instance_map"
+    #    ].astype(int)
     print()
     print("home_robot observations:")
     print("------------------------")

@@ -29,11 +29,7 @@ if __name__ == "__main__":
     robot.switch_to_navigation_mode()
 
     print("The robot locates at " + str(robot.nav.get_base_pose()))
-<<<<<<< HEAD
     xyt_goal = [1, 4.5, 0.5]
-=======
-    xyt_goal = [1, 3, 0.5]
->>>>>>> 471a2e5b087fb800a63e73366e6dd87b9a90132b
     print("The robot navigates to " + str(xyt_goal))
     i = 0
     while True:
@@ -51,7 +47,6 @@ if __name__ == "__main__":
 
 
     print("The robot locates at " + str(robot.nav.get_base_pose()))
-<<<<<<< HEAD
     xyt_goal = [-4, 4.5, np.pi / 2]
     print("The robot navigates to " + str(xyt_goal))
     i = 0
@@ -66,21 +61,7 @@ if __name__ == "__main__":
             break
 
     print("The robot locates at " + str(robot.nav.get_base_pose()))
-    xyt_goal = [-7, 6, 0]
-=======
-    xyt_goal = [-4, 3.5, 1]
->>>>>>> 471a2e5b087fb800a63e73366e6dd87b9a90132b
-    print("The robot navigates to " + str(xyt_goal))
     i = 0
-    while True:
-        i += 1
-        print("Move " + str(i))
-        robot.nav.navigate_to(xyt_goal)
-        xyt_curr = robot.nav.get_base_pose()
-        print("The robot currently loactes at " + str(xyt_curr))
-        if np.allclose(xyt_curr[:2], xyt_goal[:2], atol=POS_TOL) and np.allclose(xyt_curr[2], xyt_goal[2], atol=YAW_TOL):
-            print(str(i) + " moves takes our robot to " + str(xyt_goal))
-            break
 
     print(f"Confirm that the robot moved to {xyt_goal} (forward left, facing right)")
     input("(press enter to continue)")
