@@ -1,6 +1,7 @@
 numpy <1.24 # certain deprecated operations were used in other deps
 scipy
-sophuspy
+#sophuspy
+sophus
 opencv-python
 pybullet
 trimesh
@@ -26,3 +27,4 @@ h5py
 imageio
 pygifsicle
 pynput
+pin

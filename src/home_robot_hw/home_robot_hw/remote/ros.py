@@ -94,7 +94,7 @@ class StretchRosInterface:
         self.curr_visualizer = Visualizer("current_pose", rgba=[0.0, 0.0, 1.0, 0.5])
 
         # Initialize ros communication
-        self._safety_check()
+        #self._safety_check()
         self._create_pubs_subs()
         self._create_services()
 
