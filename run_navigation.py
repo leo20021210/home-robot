@@ -18,6 +18,8 @@ from home_robot_hw.remote import StretchClient
 import yaml
 from pathlib import Path
 
+import time
+
 map_data = yaml.safe_load(Path("map_data.yaml").read_text())
 xmin, ymin, resolution = map_data['xmin'], map_data['ymin'], map_data['resolution']
 
@@ -158,6 +160,7 @@ def navigate(robot, goal):
         robot.nav.navigate_to(xyt_goal)
         xyt_curr = robot.nav.get_base_pose()
         print("The robot currently loactes at " + str(xyt_curr))
+        time.sleep(0.5)
         if np.allclose(xyt_curr[:2], xyt_goal[:2], atol=POS_TOL) and np.allclose(xyt_curr[2], xyt_goal[2], atol=YAW_TOL):
             print("The robot is finally at " + str(xyt_goal))
             break
@@ -189,9 +192,9 @@ while True:
     #print("end_theta =", end_theta)
     #valid_targets = [to_xy(rp) for rp in get_reachable_points((end_x, end_y))]
     #print(valid_targets)
-    #end_xy = valid_targets[np.argmin(np.linalg.norm(valid_targets - [end_x, end_y], axis = -1))]
-    end_xy = valid_targets[np.argmin(
-        np.linalg.norm(valid_targets - [end_x, end_y], axis = -1) + 0.9 * np.linalg.norm(valid_targets - [start_x, start_y], axis = -1))]
+    end_xy = valid_targets[np.argmin(np.linalg.norm(valid_targets - [end_x, end_y], axis = -1))]
+    #end_xy = valid_targets[np.argmin(
+    #    np.linalg.norm(valid_targets - [end_x, end_y], axis = -1) + 0.8 * np.linalg.norm(valid_targets - [start_x, start_y], axis = -1))]
     print("start at ", robot.nav.get_base_pose())
     print(to_pt(start_xy) in valid_pts)
     print(to_pt(end_xy) in valid_pts)
