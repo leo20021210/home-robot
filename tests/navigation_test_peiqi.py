@@ -29,7 +29,7 @@ if __name__ == "__main__":
     robot.switch_to_navigation_mode()
 
     print("The robot locates at " + str(robot.nav.get_base_pose()))
-    xyt_goal = [1, 4.5, 0.5]
+    xyt_goal = [-1, -4.5, 0.5]
     print("The robot navigates to " + str(xyt_goal))
     i = 0
     while True:
@@ -47,7 +47,7 @@ if __name__ == "__main__":
 
 
     print("The robot locates at " + str(robot.nav.get_base_pose()))
-    xyt_goal = [-4, 4.5, np.pi / 2]
+    xyt_goal = [4, -4.5, np.pi / 2]
     print("The robot navigates to " + str(xyt_goal))
     i = 0
     while True:

@@ -3,15 +3,22 @@ from std_msgs.msg import Float64MultiArray
 import numpy as np
 
 from home_robot_hw.remote import StretchClient
+#import stretch_body.robot
 import zmq
+import time
 
 robot = StretchClient()
+#robot = stretch_body.robot.Robot()
+#robot.startup()
+
+POS_TOL = 0.1
+YAW_TOL = 0.2
 
 context = zmq.Context()
 socket = context.socket(zmq.REQ)
 socket.connect("tcp://172.24.71.253:5555")
 
-def navigate(robot, goal):
+def navigate(robot, xyt_goal):
     while True:
         robot.nav.navigate_to(xyt_goal)
         xyt_curr = robot.nav.get_base_pose()
@@ -52,13 +59,14 @@ def recv_array(socket, flags=0, copy=True, track=False):
 def run():
     # Reset robot
     print("Resetting robot...")
-    robot.reset()
+    #robot.reset()
     print(robot.nav.get_base_pose())
     context = zmq.Context()
     socket = context.socket(zmq.REQ)
     socket.connect("tcp://172.24.71.253:5555")
     while True:
         start_xy = robot.nav.get_base_pose()
+        #start_xy = [robot.base.status['x'], robot.base.status['y'], robot.base.status['theta']]
         end_x = float(input("Enter x:"))
         print("end_x =", end_x)
         end_y = float(input("Enter y:"))
@@ -70,8 +78,21 @@ def run():
         socket.send_string("Waiting for path")
         paths = recv_array(socket)
         for path in paths:
-            #print(path)
             navigate(robot, path)
+            #cur_xy = [robot.base.status['x'], robot.base.status['y'], robot.base.status['theta']]
+            #dis = np.linalg.norm(path[:2] - cur_xy[:2])
+            #rotate = path[2] - cur_xy[2]
+            #print(cur_xy)
+            #print(path)
+            #print(dis, rotate)
+            #robot.base.rotate_by(rotate)
+            #robot.push_command()
+            #robot.base.left_wheel.wait_until_at_setpoint()
+            #print("Rotated")
+            #robot.base.translate_by(dis)
+            #robot.push_command()
+            #robot.base.left_wheel.wait_until_at_setpoint()
+            #print("Translated")
 
 if __name__ == '__main__':
     run()
