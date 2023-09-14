@@ -77,6 +77,7 @@ def run():
         print(socket.recv_string())
         socket.send_string("Waiting for path")
         paths = recv_array(socket)
+        print(paths)
         for path in paths:
             navigate(robot, path)
             #cur_xy = [robot.base.status['x'], robot.base.status['y'], robot.base.status['theta']]

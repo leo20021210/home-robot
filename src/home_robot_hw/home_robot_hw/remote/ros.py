@@ -120,6 +120,7 @@ class StretchRosInterface:
 
     def send_trajectory_goals(self, joint_goals: Dict[str, float]):
         # Preprocess arm joints (arm joints are actually 4 joints in one)
+        print(joint_goals)
         if self.ARM_JOINT in joint_goals:
             arm_joint_goal = joint_goals.pop(self.ARM_JOINT)
 
@@ -140,6 +141,7 @@ class StretchRosInterface:
             joint_names.append(name)
             joint_values.append(val)
 
+        print(joint_names, joint_vlaues)
         # Construct goal positions
         point_msg = JointTrajectoryPoint()
         point_msg.positions = joint_values
