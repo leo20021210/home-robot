@@ -64,17 +64,30 @@ def run():
     context = zmq.Context()
     socket = context.socket(zmq.REQ)
     socket.connect("tcp://172.24.71.253:5555")
+    mode = int(input("test mode (1 for debugging, 2 for open vocab): "))
     while True:
         start_xy = robot.nav.get_base_pose()
         #start_xy = [robot.base.status['x'], robot.base.status['y'], robot.base.status['theta']]
-        end_x = float(input("Enter x:"))
-        print("end_x =", end_x)
-        end_y = float(input("Enter y:"))
-        print("end_y =", end_y)
+        if mode == 1:
+            end_x = float(input("Enter x:"))
+            print("end_x = ", end_x)
+            end_y = float(input("Enter y:"))
+            print("end_y = ", end_y)
+        else:
+            A = str(input("Enter A: "))
+            print("A = ", A)
+            B = str(input("Enter B: "))
+            print("B = ", B)
         send_array(socket, start_xy)
         print(socket.recv_string())
-        send_array(socket, [end_x, end_y])
-        print(socket.recv_string())
+        if mode == 1:
+            send_array(socket, [end_x, end_y])
+            print(socket.recv_string())
+        else:
+            socket.send_string(A)
+            print(socket.recv_string())
+            socket.send_string(B)
+            print(socket.recv_string())
         socket.send_string("Waiting for path")
         paths = recv_array(socket)
         print(paths)
