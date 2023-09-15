@@ -141,7 +141,7 @@ class StretchRosInterface:
             joint_names.append(name)
             joint_values.append(val)
 
-        print(joint_names, joint_vlaues)
+        #print(joint_names, joint_vlaues)
         # Construct goal positions
         point_msg = JointTrajectoryPoint()
         point_msg.positions = joint_values

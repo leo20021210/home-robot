@@ -8,6 +8,8 @@ import zmq
 import time
 
 robot = StretchClient()
+#robot.switch_to_navigation_mode()
+#robot.move_to_nav_posture()
 #robot = stretch_body.robot.Robot()
 #robot.startup()
 
@@ -93,6 +95,9 @@ def run():
         print(paths)
         for path in paths:
             navigate(robot, path)
+        #xyt = robot.nav.get_base_pose()
+        #xyt[2] = xyt[2] + np.pi / 2
+        #navigate(robot, xyt)
             #cur_xy = [robot.base.status['x'], robot.base.status['y'], robot.base.status['theta']]
             #dis = np.linalg.norm(path[:2] - cur_xy[:2])
             #rotate = path[2] - cur_xy[2]
