@@ -14,11 +14,21 @@ from sensor_msgs.msg import CameraInfo, Image, LaserScan
 from home_robot.utils.image import Camera
 from home_robot_hw.ros.msg_numpy import image_to_numpy
 
+from cv_bridge import CvBridge, CvBridgeError
+import cv2
+
+import signal
+import sys
+
+import os
+
 DEFAULT_COLOR_TOPIC = "/camera/color"
 DEFAULT_DEPTH_TOPIC = "/camera/aligned_depth_to_color"
 DEFAULT_LIDAR_TOPIC = "/scan"
 DEFAULT_POSE_TOPIC = "/state_estimator/pose_filtered"
 
+out = None
+#out = cv2.VideoWriter('project.mp4', cv2.VideoWriter_fourcc(*'MP4V'), fps = 10.0, frameSize = (480, 640), isColor = True)
 
 class SynchronizedSensors(object):
     """Quick class to use a time synchronizer to collect sensor data to speed up the robot execution."""
@@ -48,6 +58,16 @@ class SynchronizedSensors(object):
     def _callback(self, color, depth, lidar, pose):
         """Process the data and expose it"""
         self._lidar_points = self._process_laser(lidar)
+        img = CvBridge().imgmsg_to_cv2(color, desired_encoding="rgb8")
+        K = np.array(self._color_camera_info.K).reshape([3, 3])
+        D = np.array(self._color_camera_info.D)
+        image = cv2.undistort(img, K, D)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        if out is None:
+            out = cv2.VideoWriter(self.video_name, cv2.VideoWriter_fourcc(*'MP4V'), fps = 25.0, frameSize = (np.asarray(image).shape[1], np.asarray(image).shape[0]), isColor = True)
+        #image_list.append(image)
+        out.write(image)
         self._times = {
             "rgb": color.header.stamp.to_sec(),
             "depth": depth.header.stamp.to_sec(),
@@ -67,7 +87,12 @@ class SynchronizedSensors(object):
         pose_topic,
         verbose=False,
         slop_time_seconds=0.05,
+        folder_name = '/data/pick_and_place_exps/Sofa3',
+        video_name = 'voxel_map_nav.mp4',
     ):
+        if not os.path.exists(folder_name):
+            os.makedirs(folder_name)
+        self.video_name = folder_name + video_name
         self.verbose = verbose
         self._t = rospy.Time(0)
         self._lock = threading.Lock()
@@ -91,6 +116,13 @@ class SynchronizedSensors(object):
         )
         self._sync.registerCallback(self._callback)
 
+def exit_gracefully(signal, frame):
+    out.release()
+    print('hello')
+    sys.exit(0)
+
+# Register the signal handler
+signal.signal(signal.SIGINT, exit_gracefully)
 
 if __name__ == "__main__":
     rospy.init_node("sync_sensors_test")
@@ -100,7 +132,8 @@ if __name__ == "__main__":
         scan_topic="/scan",
         pose_topic="state_estimator/pose_filtered",
     )
-    rate = rospy.Rate(10)
+    input('Ready?')
+    rate = rospy.Rate(25)
     t0 = rospy.Time.now()
     while not rospy.is_shutdown():
         t1 = rospy.Time.now()
