@@ -113,15 +113,26 @@ class ObjectNavFrontierExplorationPolicy(nn.Module):
                 :,
                 :,
             ]
-            inst_map_idx = instance_map == instance_id
-            inst_map_idx = torch.argmax(torch.sum(inst_map_idx, axis=(1, 2)))
-            goal_map = (
-                (instance_map[inst_map_idx] == instance_id).to(torch.float).unsqueeze(0)
-            )
-            if torch.sum(goal_map) == 0:
-                found_goal = torch.tensor([0])
+            if len(instance_map) != 0:
+                inst_map_idx = instance_map == instance_id
+                inst_map_idx = torch.argmax(torch.sum(inst_map_idx, axis=(1, 2)))
+                goal_map = (
+                    (instance_map[inst_map_idx] == instance_id)
+                    .to(torch.float)
+                    .unsqueeze(0)
+                )
+                if torch.sum(goal_map) == 0:
+                    found_goal = torch.tensor([0])
+                else:
+                    found_goal = torch.tensor([1])
             else:
-                found_goal = torch.tensor([1])
+                # try to navigate to instance without an instance map -- explore
+                # create an empty goal map
+                batch_size, _, height, width = map_features.shape
+                device = map_features.device
+                goal_map = torch.zeros((batch_size, height, width), device=device)
+                found_goal = torch.tensor([0])
+
             goal_map = self.explore_otherwise(map_features, goal_map, found_goal)
             return goal_map, found_goal
 
@@ -247,10 +258,6 @@ class ObjectNavFrontierExplorationPolicy(nn.Module):
         frontier_map = (
             binary_dilation(frontier_map, self.select_border_kernel) - frontier_map
         )
-
-        # Remove obstacles from the frontier
-        obstacle_map = map_features[:, [MC.OBSTACLE_MAP], :, :]
-        frontier_map[obstacle_map > 0] = 0.0
 
         return frontier_map
 

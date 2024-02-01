@@ -4,8 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
+import numpy as np
 import torch
 
 from home_robot.core.interfaces import ContinuousNavigationAction
@@ -50,9 +51,27 @@ class RobotClient(ABC):
         """Is the robot to move around"""
         return self._base_control_mode == ControlMode.NAVIGATION
 
+    def last_motion_failed(self) -> bool:
+        """Override this if you want to check to see if a particular motion failed, e.g. it was not reachable and we don't know why."""
+        return False
+
     @abstractmethod
     def get_robot_model() -> RobotModel:
         """return a model of the robot for planning"""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def execute_trajectory(
+        self,
+        trajectory: List[np.ndarray],
+        pos_err_threshold: float = 0.2,
+        rot_err_threshold: float = 0.75,
+        spin_rate: int = 10,
+        verbose: bool = False,
+        per_waypoint_timeout: float = 10.0,
+        relative: bool = False,
+    ):
+        """Open loop trajectory execution"""
         raise NotImplementedError()
 
 
