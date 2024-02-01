@@ -26,3 +26,4 @@ h5py
 imageio
 pygifsicle
 pynput
+loguru
