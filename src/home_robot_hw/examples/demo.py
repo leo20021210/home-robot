@@ -18,7 +18,7 @@ import torch
 from PIL import Image
 
 # Mapping and perception
-import home_robot.utils.depth as du
+# import home_robot.utils.depth as du
 from home_robot.agent.multitask import get_parameters
 from home_robot.agent.multitask.robot_agent import RobotAgent
 from home_robot.perception import create_semantic_sensor
@@ -140,25 +140,29 @@ def main(
     print(parameters)
     if explore_iter >= 0:
         parameters["exploration_steps"] = explore_iter
-    object_to_find, location_to_place = parameters.get_task_goals()
+    # object_to_find, location_to_place = parameters.get_task_goals()
+    object_to_find, location_to_place = None, None
 
     print("- Create semantic sensor based on detic")
-    config, semantic_sensor = create_semantic_sensor(
-        device_id=device_id, verbose=verbose
-    )
+    # config, semantic_sensor = create_semantic_sensor(
+    #    device_id=device_id, verbose=verbose
+    # )
+    semantic_sensor = None
 
     print("- Start robot agent with data collection")
-    grasp_client = GraspPlanner(robot, env=None, semantic_sensor=semantic_sensor)
+    # grasp_client = GraspPlanner(robot, env=None, semantic_sensor=semantic_sensor)
+    grasp_client = None
     demo = RobotAgent(
         robot, semantic_sensor, parameters, rpc_stub=stub, grasp_client=grasp_client
     )
     demo.start(goal=object_to_find, visualize_map_at_start=show_intermediate_maps)
-    if object_to_find is not None:
-        print(f"\nSearch for {object_to_find} and {location_to_place}")
-        matches = demo.get_found_instances_by_class(object_to_find)
-        print(f"Currently {len(matches)} matches for {object_to_find}.")
-    else:
-        matches = []
+    #if object_to_find is not None:
+    #    print(f"\nSearch for {object_to_find} and {location_to_place}")
+    #    matches = demo.get_found_instances_by_class(object_to_find)
+    #    print(f"Currently {len(matches)} matches for {object_to_find}.")
+    #else:
+    #    matches = []
+    matches = []
 
     # Run grasping test - just grab whatever is in front of the robot
     if test_grasping:
@@ -184,6 +188,7 @@ def main(
                 visualize=show_intermediate_maps,
             )
         print("Done collecting data.")
+        return
         matches = demo.get_found_instances_by_class(object_to_find)
         print("-> Found", len(matches), f"instances of class {object_to_find}.")
 

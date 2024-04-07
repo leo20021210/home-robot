@@ -8,8 +8,8 @@ from typing import Dict
 import numpy as np
 import rospy
 from geometry_msgs.msg import PoseStamped
-from message_filters import ApproximateTimeSynchronizer, Subscriber
-# from rospy import Subscriber
+# from message_filters import ApproximateTimeSynchronizer, Subscriber
+from rospy import Subscriber
 from sensor_msgs.msg import CameraInfo, Image
 
 from home_robot.utils.image import Camera
@@ -50,13 +50,13 @@ class SynchronizedSensors(object):
             print("Waiting for camera info on", camera_info_topic + "...")
         cam_info = rospy.wait_for_message(camera_info_topic, CameraInfo)
         topic = name + "/image_raw"
-        return Subscriber(topic, Image), cam_info
-        # if 'depth' in name:
-        #     print('Starting depth subscriber')
-        #     return Subscriber(topic, Image, self._depth_callback, queue_size = 1), cam_info
-        # else:
-        #     print('Starting RGB subscriber')
-        #     return Subscriber(topic, Image, self._rgb_callback, queue_size = 1), cam_info
+        # return Subscriber(topic, Image), cam_info
+        if 'depth' in name:
+            print('Starting depth subscriber')
+            return Subscriber(topic, Image, self._depth_callback, queue_size = 1), cam_info
+        else:
+            print('Starting RGB subscriber')
+            return Subscriber(topic, Image, self._rgb_callback, queue_size = 1), cam_info
 
 
     def depth_to_xyz(self, depth):
@@ -208,88 +208,55 @@ class SynchronizedSensors(object):
             self.voxel_pcd.add(points = valid_xyz, 
               features = feature,
               rgb = valid_rgb,)
-            # print((rospy.Time.now() - t0).to_sec())
-            # times = sensor.get_times()
-            # for k, v in times.items():
-            #     print("-", k, v - t0.to_sec())
 
-    # def _rgb_callback(self, color):
-    #     self._times['rgb'] = color.header.stamp.to_sec()
-    #     if 'depth' not in self._times or 'camera' not in self._times:
-    #         return
-    #     print('rgb comes from', self._times['rgb'] - self._t)
-    #     print('depth comes from', self._times['depth'] - self._t)
-    #     print('pose comes from', self._times['camera'] - self._t)
-    #     print()
-    #     if self.world_xyz is not None:
-    #         rgb_image = image_to_numpy(color)
-    #         rgb_image = np.rot90(rgb_image, k = 3)
-    #         rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
-    #         self.add_image_to_voxel_map(rgb_image, self.depth_image, self.world_xyz)
+    def _rgb_callback(self, color):
+        time_step = color.header.stamp.to_sec() - self._t
+        time_step = (time_step // self.slop_time_seconds) % self.queue_size
+        if time_step in self.depth_images and time_step in self.camera_poses:
+            camera_time, camera_pose = self.camera_poses[time_step]
+            depth_time, depth_image = self.depth_images[time_step]
+            if abs(depth_time - color.header.stamp.to_sec()) < self.slop_time_seconds and abs(camera_time - color.header.stamp.to_sec()) < self.slop_time_seconds:
+                print('rgb comes from', color.header.stamp.to_sec() - self._t)
+                print('depth comes from', depth_time - self._t)
+                print('pose comes from', camera_time - self._t)
+                xyz = self.depth_to_xyz(depth_image)
+                world_xyz = (
+                    np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
+                    @ camera_pose.T
+                )[..., :3]
+                world_xyz = torch.from_numpy(np.array(world_xyz))
+                rgb_image = image_to_numpy(color)
+                rgb_image = np.rot90(rgb_image, k = 3)
+                rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
+                depth_image = torch.from_numpy(np.array(depth_image))
+                self.add_image_to_voxel_map(rgb_image, depth_image, world_xyz)
 
-    # def _depth_callback(self, depth):
-    #     self._times['depth'] = depth.header.stamp.to_sec()
-    #     depth_image = image_to_numpy(depth) / 1000.0
-    #     depth_image = np.rot90(depth_image, k = 3)
-    #     self.depth_image = torch.from_numpy(np.array(depth_image))
-
-    # def _pose_callback(self, pose):
-    #     self._times['camera'] = pose.header.stamp.to_sec()
-    #     if self.depth_image is not None:
-    #         xyz = self.depth_to_xyz(self.depth_image.numpy())
-    #         camera_pose = np.array(matrix_from_pose_msg(pose.pose))
-    #         world_xyz = (
-    #             np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
-    #             @ camera_pose.T
-    #         )[..., :3]
-    #         self.world_xyz = torch.from_numpy(np.array(world_xyz))
-        
-
-    # def _callback(self, color, depth, camera_pose, pose):
-    def _callback(self, color, depth, camera_pose):
-        """Process the data and expose it"""
-        self._times = {
-            "rgb": color.header.stamp.to_sec(),
-            "depth": depth.header.stamp.to_sec(),
-            "camera": camera_pose.header.stamp.to_sec(),
-            # "pose": pose.header.stamp.to_sec(),
-        }
-        rgb_image = image_to_numpy(color)
+    def _depth_callback(self, depth):
+        # self._times['depth'] = depth.header.stamp.to_sec()
         depth_image = image_to_numpy(depth) / 1000.0
-        rgb_image = np.rot90(rgb_image, k = 3)
-        rgb = rgb_image
         depth_image = np.rot90(depth_image, k = 3)
+        # self.depth_image = torch.from_numpy(np.array(depth_image))
+        time_step = depth.header.stamp.to_sec() - self._t
+        time_step = (time_step // self.slop_time_seconds) % self.queue_size
+        self.depth_images[time_step] = (depth.header.stamp.to_sec(), depth_image)
 
-        xyz = self.depth_to_xyz(depth_image)
+    def _pose_callback(self, pose):
+        # self._times['camera'] = pose.header.stamp.to_sec()
+        time_step = pose.header.stamp.to_sec() - self._t
+        time_step = (time_step // self.slop_time_seconds) % self.queue_size
+        self.camera_poses[time_step] = (pose.header.stamp.to_sec(), np.array(matrix_from_pose_msg(pose.pose)))
+        # if self.depth_image is not None:
+        #     xyz = self.depth_to_xyz(self.depth_image.numpy())
+        #     camera_pose = np.array(matrix_from_pose_msg(pose.pose))
+        #     world_xyz = (
+        #         np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
+        #         @ camera_pose.T
+        #     )[..., :3]
+        #     self.world_xyz = torch.from_numpy(np.array(world_xyz))
 
-        camera_pose = np.array(matrix_from_pose_msg(camera_pose.pose))
-        world_xyz = (
-            np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
-            @ camera_pose.T
-        )[..., :3]
-
-        rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
-        depth_image = torch.from_numpy(np.array(depth_image))
-        world_xyz = torch.from_numpy(np.array(world_xyz))
-
-        self.add_image_to_voxel_map(rgb_image, depth_image, world_xyz)
-
-        # print(rgb_image)
-        cv2.imwrite('rgb.jpg', rgb[:, : , [2, 1, 0]])
-        # cv2.imwrite('depth_' + str(self._times['depth']) + '.jpg', depth_image)
-        
-        # print('camera pose: ')
-        # print(camera_pose)
-        # print('dpt: ')
-        # print(depth_image)
-        # print('xyz: ')
-        # print(xyz)
-        # print('base pose: ')
-        # print(matrix_from_pose_msg(pose.pose))
-
-    def get_times(self) -> Dict[str, float]:
-        """Get the times for all measurements"""
-        return self._times
+    # def get_times(self) -> Dict[str, float]:
+    #     """Get the times for all measurements"""
+    #     return self._times
 
     def __init__(
         self,
@@ -298,15 +265,17 @@ class SynchronizedSensors(object):
         camera_pose_topic,
         # pose_topic,
         verbose=True,
-        slop_time_seconds=0.3,
+        slop_time_seconds=0.1,
+        queue_size = 200,
         owl = False,
         device = 'cuda'
     ):
+        self.slop_time_seconds = slop_time_seconds
+        self.queue_size = queue_size
         self.verbose = verbose
-        # self._t = rospy.Time(0)
         self._t = rospy.Time.now().to_sec()
-        self.world_xyz = None
-        self.depth_image = None
+        self.camera_poses = dict()
+        self.depth_images = dict()
         self._lock = threading.Lock()
 
         self.owl = owl
@@ -339,22 +308,21 @@ class SynchronizedSensors(object):
         self.height = self._depth_camera_info.width
         self.width = self._depth_camera_info.height
         # print(self.fx, self.fy, self.px, self.py)
-        self._camera_sub = Subscriber(camera_pose_topic, PoseStamped)
-        # self._camera_sub = Subscriber(camera_pose_topic, PoseStamped, self._pose_callback, queue_size = 1)
-        # self._pose_sub = Subscriber(pose_topic, PoseStamped)
+        # self._camera_sub = Subscriber(camera_pose_topic, PoseStamped)
+        self._camera_sub = Subscriber(camera_pose_topic, PoseStamped, self._pose_callback, queue_size = 1)
 
         # Store time information
-        self._times = {}
+        # self._times = {}
 
         if verbose:
             print("Time synchronizer...")
-        self._sync = ApproximateTimeSynchronizer(
-            # [self._color_sub, self._depth_sub, self._camera_sub, self._pose_sub],
-            [self._color_sub, self._depth_sub, self._camera_sub],
-            queue_size=50,
-            slop=slop_time_seconds,
-        )
-        self._sync.registerCallback(self._callback)
+        # self._sync = ApproximateTimeSynchronizer(
+        #     # [self._color_sub, self._depth_sub, self._camera_sub, self._pose_sub],
+        #     [self._color_sub, self._depth_sub, self._camera_sub],
+        #     queue_size=50,
+        #     slop=slop_time_seconds,
+        # )
+        # self._sync.registerCallback(self._callback)
 
 
 if __name__ == "__main__":
@@ -370,11 +338,11 @@ if __name__ == "__main__":
     try:
         while not rospy.is_shutdown():
             t1 = rospy.Time.now()
-            print((t1 - t0).to_sec())
-            times = sensor.get_times()
-            for k, v in times.items():
-                print("-", k, v - t0.to_sec())
+            # print((t1 - t0).to_sec())
+            # times = sensor.get_times()
+            # for k, v in times.items():
+            #     print("-", k, v - t0.to_sec())
             rate.sleep()
     finally:
         print('Stop streaming images and write memory data')
-        torch.save(sensor.voxel_pcd, 'memory.pt')
+        torch.save(sensor.voxel_pcd, 'memory_mahi.pt')

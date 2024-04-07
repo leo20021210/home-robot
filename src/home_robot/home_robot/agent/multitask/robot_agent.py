@@ -239,7 +239,7 @@ class RobotAgent:
         os.makedirs(f"{self.path}/viz_data", exist_ok=True)
 
         # Assume this will only be needed for hw demo, but not for sim
-        if parameters["start_ui_server"]:
+        if parameters["start_ui_server"] and semantic_sensor:
             with atomic_write(f"{self.path}/viz_data/vocab_dict.pkl", mode="wb") as f:
                 pickle.dump(self.semantic_sensor.seg_id_to_name, f)
 
@@ -572,7 +572,8 @@ class RobotAgent:
         self.obs_count += 1
         obs_count = self.obs_count
         # Semantic prediction
-        obs = self.semantic_sensor.predict(obs)
+        if self.semantic_sensor:
+            obs = self.semantic_sensor.predict(obs)
         self.voxel_map.add_obs(obs)
         # Add observation - helper function will unpack it
         if visualize_map:
@@ -740,6 +741,9 @@ class RobotAgent:
 
     def print_found_classes(self, goal: Optional[str] = None):
         """Helper. print out what we have found according to detic."""
+        if not self.semantic_sensor:
+            print('No semantic Sensor yet')
+            return
         instances = self.voxel_map.get_instances()
         if goal is not None:
             print(f"Looking for {goal}.")
@@ -813,6 +817,8 @@ class RobotAgent:
             instance_id(int): a unique int identifying this instance
             instance(Instance): information about a particular object we believe exists
         """
+        if not self.semantic_sensor:
+            return None
         matching_instances = []
         if goal is None:
             # No goal means no matches

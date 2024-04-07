@@ -20,10 +20,7 @@ from pytorch3d.structures import Pointclouds
 from torch import Tensor
 
 from home_robot.core.interfaces import Observations
-from home_robot.mapping.instance import Instance, InstanceMemory, InstanceView
 from home_robot.motion import Footprint, PlanResult, RobotModel
-from home_robot.perception.encoders import ClipEncoder
-from home_robot.utils.bboxes_3d import BBoxes3D
 from home_robot.utils.data_tools.dict import update
 from home_robot.utils.morphology import binary_dilation, binary_erosion, get_edges
 from home_robot.utils.point_cloud import (
@@ -36,6 +33,17 @@ from home_robot.utils.point_cloud_torch import unproject_masked_depth_to_xyz_coo
 from home_robot.utils.visualization import create_disk
 from home_robot.utils.voxel import VoxelizedPointcloud, scatter3d
 
+import torch.nn.functional as F
+import torchvision.transforms.functional as V
+from segment_anything import sam_model_registry, SamPredictor
+from transformers import AutoProcessor, OwlViTForObjectDetection
+import clip
+from torchvision import transforms
+from home_robot.mapping.voxel.scannet import CLASS_LABELS_200
+import os
+import wget
+# import cv2
+
 Frame = namedtuple(
     "Frame",
     [
@@ -45,12 +53,8 @@ Frame = namedtuple(
         "rgb",
         "feats",
         "depth",
-        "instance",
-        "instance_classes",
-        "instance_scores",
         "base_pose",
         "info",
-        "obs",
         "full_world_xyz",
         "xyz_frame",
     ],
@@ -74,11 +78,11 @@ class SparseVoxelMap(object):
     """Create a voxel map object which captures 3d information.
 
     This class represents a 3D voxel map used for capturing environmental information. It provides various parameters
-    for configuring the map's properties, such as resolution, feature dimensions, and instance memory settings.
+    for configuring the map's properties, such as resolution, feature dimensions.
 
     Attributes:
         resolution (float): The size of a voxel in meters.
-        feature_dim (int): The size of feature embeddings to capture per-voxel point, separate from instance memory.
+        feature_dim (int): The size of feature embeddings to capture per-voxel point.
         grid_size (Tuple[int, int]): The dimensions of the voxel grid (optional).
         grid_resolution (float): The resolution of the grid (optional).
         obs_min_height (float): The minimum height for observations.
@@ -91,12 +95,8 @@ class SparseVoxelMap(object):
         min_depth (float): The minimum depth for observations.
         max_depth (float): The maximum depth for observations.
         pad_obstacles (int): Padding for obstacles.
-        background_instance_label (int): The label for the background instance.
-        instance_memory_kwargs (Dict[str, Any]): Additional instance memory configuration.
         voxel_kwargs (Dict[str, Any]): Additional voxel configuration.
-        encoder (Optional[ClipEncoder]): An encoder for feature embeddings (optional).
         map_2d_device (str): The device for 2D mapping.
-        use_instance_memory (bool): Whether to create object-centric instance memory.
     """
 
     DEFAULT_INSTANCE_MAP_KWARGS = dict(
@@ -122,25 +122,22 @@ class SparseVoxelMap(object):
         min_depth: float = 0.1,
         max_depth: float = 4.0,
         pad_obstacles: int = 0,
-        background_instance_label: int = -1,
-        instance_memory_kwargs: Dict[str, Any] = {},
         voxel_kwargs: Dict[str, Any] = {},
-        encoder: Optional[ClipEncoder] = None,
         map_2d_device: str = "cpu",
-        # use_instance_memory: bool = True,
-        use_instance_memory: bool = False,
         use_median_filter: bool = False,
         median_filter_size: int = 5,
         median_filter_max_error: float = 0.01,
         use_derivative_filter: bool = False,
         derivative_filter_threshold: float = 0.5,
+        owl = True,
+        device = 'cuda'
     ):
         """
         Args:
             resolution(float): in meters, size of a voxel
-            feature_dim(int): size of feature embeddings to capture per-voxel point (separate from instance memory)
-            use_instance_memory(bool): if we should create object-centric instance memory
+            feature_dim(int): size of feature embeddings to capture per-voxel point
         """
+        print('------------------------YOU ARE NOW RUNNING PEIQI VOXEL MAP CODES-----------------')
         # TODO: We an use fastai.store_attr() to get rid of this boilerplate code
         self.resolution = resolution
         self.feature_dim = feature_dim
@@ -175,13 +172,8 @@ class SparseVoxelMap(object):
         self.min_depth = min_depth
         self.max_depth = max_depth
         self.pad_obstacles = int(pad_obstacles)
-        self.background_instance_label = background_instance_label
-        self.instance_memory_kwargs = update(
-            copy.deepcopy(self.DEFAULT_INSTANCE_MAP_KWARGS), instance_memory_kwargs
-        )
-        self.use_instance_memory = use_instance_memory
+
         self.voxel_kwargs = voxel_kwargs
-        self.encoder = encoder
         self.map_2d_device = map_2d_device
 
         if self.pad_obstacles > 0:
@@ -210,7 +202,8 @@ class SparseVoxelMap(object):
         if grid_size is not None:
             self.grid_size = [grid_size[0], grid_size[1]]
         else:
-            self.grid_size = DEFAULT_GRID_SIZE
+            # self.grid_size = DEFAULT_GRID_SIZE
+            self.grid_size = [500, 500]
         # Track the center of the grid - (0, 0) in our coordinate system
         # We then just need to update everything when we want to track obstacles
         self.grid_origin = Tensor(self.grid_size + [0], device=map_2d_device) // 2
@@ -219,17 +212,26 @@ class SparseVoxelMap(object):
         # Used for tensorized bounds checks
         self._grid_size_t = Tensor(self.grid_size, device=map_2d_device)
 
+        self.owl = owl
+        self.device = device
+        self.clip_model, self.clip_preprocess = clip.load("ViT-B/16", device=device)
+        self.clip_model.eval()
+        if self.owl:
+            self.owl_processor = AutoProcessor.from_pretrained("google/owlvit-base-patch32")
+            self.owl_model = OwlViTForObjectDetection.from_pretrained("google/owlvit-base-patch32").eval().to(device)
+            if not os.path.exists('sam_vit_b_01ec64.pth'):
+                wget.download('https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth', out = 'sam_vit_b_01ec64.pth')
+            sam = sam_model_registry['vit_b'](checkpoint='sam_vit_b_01ec64.pth')
+            self.mask_predictor = SamPredictor(sam)
+            self.mask_predictor.model = self.mask_predictor.model.eval().to(device)
+            self.texts = [['a photo of ' + text for text in CLASS_LABELS_200]]
+
         # Init variables
         self.reset()
 
     def reset(self) -> None:
         """Clear out the entire voxel map."""
         self.observations = []
-        # Create an instance memory to associate bounding boxes in space
-        self.instances = InstanceMemory(
-            num_envs=1,
-            **self.instance_memory_kwargs,
-        )
         # Create voxelized pointcloud
         self.voxel_pcd = VoxelizedPointcloud(
             voxel_size=self.voxel_resolution,
@@ -249,18 +251,11 @@ class SparseVoxelMap(object):
         # Stores points in 2d coords where robot has been
         self._visited = torch.zeros(self.grid_size, device=self.map_2d_device)
 
-        # Store instances detected (all of them for now)
-        self.instances.reset()
-
         self.voxel_pcd.reset()
 
         # Store 2d map information
         # This is computed from our various point clouds
         self._map2d = None
-
-    def get_instances(self) -> List[Instance]:
-        """Return a list of all viewable instances"""
-        return list(self.instances.instances[0].values())
 
     def fix_type(self, tensor: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
         """Convert to tensor and float"""
@@ -269,6 +264,93 @@ class SparseVoxelMap(object):
         if isinstance(tensor, np.ndarray):
             tensor = torch.from_numpy(tensor)
         return tensor.float()
+    
+    def forward_one_block(self, resblocks, x):
+        q, k, v = None, None, None
+        y = resblocks.ln_1(x)
+        y = F.linear(y, resblocks.attn.in_proj_weight, resblocks.attn.in_proj_bias)
+        N, L, C = y.shape
+        y = y.view(N, L, 3, C//3).permute(2, 0, 1, 3).reshape(3*N, L, C//3)
+        y = F.linear(y, resblocks.attn.out_proj.weight, resblocks.attn.out_proj.bias)
+        q, k, v = y.tensor_split(3, dim=0)
+        v += x
+        v = v + resblocks.mlp(resblocks.ln_2(v))
+
+        return v
+
+    def extract_mask_clip_features(self, x, image_shape):
+        with torch.no_grad():
+            x = self.clip_model.visual.conv1(x)
+            N, L, H, W = x.shape
+            x = x.reshape(x.shape[0], x.shape[1], -1)
+            x = x.permute(0, 2, 1)
+            x = torch.cat([self.clip_model.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)
+            x = x + self.clip_model.visual.positional_embedding.to(x.dtype)
+            x = self.clip_model.visual.ln_pre(x)
+            x = x.permute(1, 0, 2)
+            for idx in range(self.clip_model.visual.transformer.layers):
+                if idx == self.clip_model.visual.transformer.layers - 1:
+                    break
+                x = self.clip_model.visual.transformer.resblocks[idx](x)
+            x = self.forward_one_block(self.clip_model.visual.transformer.resblocks[-1], x)
+            x = x[1:]
+            x = x.permute(1, 0, 2)
+            x = self.clip_model.visual.ln_post(x)
+            x = x @ self.clip_model.visual.proj
+            feat = x.reshape(N, H, W, -1).permute(0, 3, 1, 2)
+        feat = F.interpolate(feat, image_shape, mode = 'bilinear', align_corners = True)
+        feat = F.normalize(feat, dim = 1)
+        return feat.permute(0, 2, 3, 1)
+    
+    def run_mask_clip(self, rgb):
+        with torch.no_grad():
+            if self.device == 'cpu':
+                input = self.clip_preprocess(transforms.ToPILImage()(rgb)).unsqueeze(0).to(self.device)
+            else:
+                input = self.clip_preprocess(transforms.ToPILImage()(rgb)).unsqueeze(0).to(self.device).half()
+            features = self.extract_mask_clip_features(input, rgb.shape[-2:])[0].cpu()
+    
+        return features
+    
+    def run_owl_sam_clip(self, rgb, valid_depth):
+        with torch.no_grad():
+            inputs = self.owl_processor(text=self.texts, images=rgb, return_tensors="pt")
+            for input in inputs:
+                inputs[input] = inputs[input].to(self.device)
+            outputs = self.owl_model(**inputs)
+            target_sizes = torch.Tensor([rgb.size()[-2:]]).to(self.device)
+            results = self.owl_processor.post_process_object_detection(outputs=outputs, threshold=0.15, target_sizes=target_sizes)
+            if len(results[0]['boxes']) == 0:
+                return None, None, None
+
+            self.mask_predictor.set_image(rgb.permute(1,2,0).numpy())
+            transformed_boxes = self.mask_predictor.transform.apply_boxes_torch(results[0]['boxes'].detach().to(self.device), rgb.shape[-2:])
+            masks, _, _= self.mask_predictor.predict_torch(
+                point_coords=None,
+                point_labels=None,
+                boxes=transformed_boxes,
+                multimask_output=False
+            )
+            masks = masks[:, 0, :, :].cpu()
+    
+            crops = []
+            for box in results[0]['boxes']:
+                tl_x, tl_y, br_x, br_y = box
+                crops.append(self.clip_preprocess(transforms.ToPILImage()(rgb[:, max(int(tl_y), 0): min(int(br_y), rgb.shape[1]), max(int(tl_x), 0): min(int(br_x), rgb.shape[2])])))
+            features = self.clip_model.encode_image(torch.stack(crops, dim = 0).to(self.device))
+            features = F.normalize(features, dim = -1).cpu()
+
+        feats = torch.empty((rgb.shape[-2], rgb.shape[-1], features.shape[-1]), dtype=features.dtype)
+        final_mask = torch.full_like(valid_depth, fill_value=False, dtype=torch.bool)
+
+        for (sam_mask, feature) in zip(masks.cpu(), features.cpu()):
+            valid_mask = torch.logical_and(valid_depth, sam_mask)
+            # cv2.imwrite('debug1.jpg', sam_mask.int().numpy() * 255)
+            # cv2.imwrite('debug2.jpg', valid_depth.int().numpy() * 255)
+            feats[valid_mask] = feature
+            final_mask[valid_mask] = True
+        
+        return feats, final_mask
 
     def add_obs(
         self,
@@ -286,21 +368,13 @@ class SparseVoxelMap(object):
             np.array([obs.gps[0], obs.gps[1], obs.compass[0]])
         ).float()
         K = self.fix_type(obs.camera_K) if camera_K is None else camera_K
-        task_obs = obs.task_observations
 
-        # Allow task_observations to provide semantic sensor
-        def _pop_with_task_obs_default(k, default=None):
-            res = kwargs.pop(k, task_obs.get(k, None))
-            if res is not None:
-                res = self.fix_type(res)
-            return res
-
-        if task_obs:
-            instance_image = _pop_with_task_obs_default("instance_image")
-            instance_classes = _pop_with_task_obs_default("instance_classes")
-            instance_scores = _pop_with_task_obs_default("instance_scores")
-        else:
-            instance_image, instance_classes, instance_scores = None, None, None
+        # # Allow task_observations to provide semantic sensor
+        # def _pop_with_task_obs_default(k, default=None):
+        #     res = kwargs.pop(k, task_obs.get(k, None))
+        #     if res is not None:
+        #         res = self.fix_type(res)
+        #     return res
 
         self.add(
             camera_pose=camera_pose,
@@ -308,11 +382,7 @@ class SparseVoxelMap(object):
             rgb=rgb,
             depth=depth,
             base_pose=base_pose,
-            obs=obs,
             camera_K=K,
-            instance_image=instance_image,
-            instance_classes=instance_classes,
-            instance_scores=instance_scores,
             *args,
             **kwargs,
         )
@@ -355,18 +425,6 @@ class SparseVoxelMap(object):
             rgb = torch.from_numpy(rgb)
         if isinstance(camera_pose, np.ndarray):
             camera_pose = torch.from_numpy(camera_pose)
-        if self.use_instance_memory:
-            assert rgb.ndim == 3, f"{rgb.ndim=}: must be 3 if using instance memory"
-            H, W, _ = rgb.shape
-            if instance_image is None:
-                assert (
-                    obs is not None
-                ), "must provide instance image or raw observations with instances"
-                assert (
-                    obs.instance is not None
-                ), "must provide instance image in observation if not available otherwise"
-                if isinstance(obs.instance, np.ndarray):
-                    instance_image = torch.from_numpy(obs.instance)
         if depth is not None:
             assert (
                 rgb.shape[:-1] == depth.shape
@@ -438,12 +496,8 @@ class SparseVoxelMap(object):
                 rgb,
                 feats,
                 depth,
-                instance_image,
-                instance_classes,
-                instance_scores,
                 base_pose,
                 info,
-                obs,
                 full_world_xyz,
                 xyz_frame=xyz_frame,
             )
@@ -463,24 +517,13 @@ class SparseVoxelMap(object):
                     & (median_filter_error < self.median_filter_max_error).bool()
                 )
 
-        # Add instance views to memory
-        if self.use_instance_memory:
-            instance = instance_image.clone()
+        if feats is None:
+            if not self.owl:
+                feats = self.run_mask_clip(rgb.permute(2, 0, 1))
+            else:
+                feats, valid_depth = self.run_owl_sam_clip(rgb.permute(2, 0, 1), valid_depth)
 
-            self.instances.process_instances_for_env(
-                env_id=0,
-                instance_seg=instance,
-                point_cloud=full_world_xyz.reshape(H, W, 3),
-                image=rgb.permute(2, 0, 1),
-                cam_to_world=camera_pose,
-                instance_classes=instance_classes,
-                instance_scores=instance_scores,
-                background_instance_labels=[self.background_instance_label],
-                valid_points=valid_depth,
-                pose=base_pose,
-                encoder=self.encoder,
-            )
-            self.instances.associate_instances_to_memory()
+        # print(feats.shape)
 
         # Add to voxel grid
         if feats is not None:
@@ -500,22 +543,6 @@ class SparseVoxelMap(object):
 
         # Increment sequence counter
         self._seq += 1
-
-    def mask_from_bounds(self, bounds: np.ndarray, debug: bool = False):
-        """create mask from a set of 3d object bounds"""
-        assert bounds.shape[0] == 3, "bounding boxes in xyz"
-        assert bounds.shape[1] == 2, "min and max"
-        assert (len(bounds.shape)) == 2, "only one bounding box"
-        mins = torch.floor(self.xy_to_grid_coords(bounds[:2, 0])).long()
-        maxs = torch.ceil(self.xy_to_grid_coords(bounds[:2, 1])).long()
-        obstacles, explored = self.get_2d_map()
-        mask = torch.zeros_like(explored)
-        mask[mins[0] : maxs[0] + 1, mins[1] : maxs[1] + 1] = True
-        if debug:
-            import matplotlib.pyplot as plt
-
-            plt.imshow(obstacles.int() + explored.int() + mask.int())
-        return mask
 
     def _update_visited(self, base_pose: Tensor):
         """Update 2d map of where robot has visited"""
@@ -541,7 +568,6 @@ class SparseVoxelMap(object):
         data["rgb"] = []
         data["depth"] = []
         data["feats"] = []
-        data["obs"] = []
         for frame in self.observations:
             # add it to pickle
             # TODO: switch to using just Obs struct?
@@ -553,7 +579,6 @@ class SparseVoxelMap(object):
             data["rgb"].append(frame.rgb)
             data["depth"].append(frame.depth)
             data["feats"].append(frame.feats)
-            data["obs"].append(frame.obs)
             for k, v in frame.info.items():
                 if k not in data:
                     data[k] = []
@@ -576,7 +601,6 @@ class SparseVoxelMap(object):
         data["rgb"] = []
         data["depth"] = []
         data["feats"] = []
-        data["obs"] = []
         for key, value in newdata.items():
             data[key] = value
         for frame in self.observations:
@@ -588,7 +612,6 @@ class SparseVoxelMap(object):
             data["rgb"].append(frame.rgb)
             data["depth"].append(frame.depth)
             data["feats"].append(frame.feats)
-            data["obs"].append(frame.obs)
             for k, v in frame.info.items():
                 if k not in data:
                     data[k] = []
@@ -631,7 +654,6 @@ class SparseVoxelMap(object):
             feats,
             depth,
             base_pose,
-            obs,
             K,
             world_xyz,
         ) in enumerate(
@@ -642,7 +664,6 @@ class SparseVoxelMap(object):
                 data["feats"],
                 data["depth"],
                 data["base_poses"],
-                data["obs"],
                 data["camera_K"],
                 data["world_xyz"],
             )
@@ -658,7 +679,6 @@ class SparseVoxelMap(object):
             if feats is not None:
                 feats = self.fix_data_type(feats)
             base_pose = self.fix_data_type(base_pose)
-            instance = self.fix_data_type(obs.instance)
             self.add(
                 camera_pose=camera_pose,
                 xyz=xyz,
@@ -666,8 +686,6 @@ class SparseVoxelMap(object):
                 feats=feats,
                 depth=depth,
                 base_pose=base_pose,
-                instance_image=instance,
-                obs=obs,
                 camera_K=K,
             )
 
@@ -703,6 +721,9 @@ class SparseVoxelMap(object):
         # Convert metric measurements to discrete
         # Gets the xyz correctly - for now everything is assumed to be within the correct distance of origin
         xyz, _, counts, _ = self.voxel_pcd.get_pointcloud()
+        if xyz is None:
+            xyz = torch.zeros((0, 3))
+            counts = torch.zeros((0))
 
         device = xyz.device
         xyz = ((xyz / self.grid_resolution) + self.grid_origin).long()
@@ -710,7 +731,7 @@ class SparseVoxelMap(object):
 
         # from home_robot.utils.point_cloud import show_point_cloud
         # show_point_cloud(xyz, rgb, orig=np.zeros(3))
-        xyz[xyz[:, -1] < 0, -1] = 0
+        # xyz[xyz[:, -1] < 0, -1] = 0
         # show_point_cloud(xyz, rgb, orig=np.zeros(3))
 
         # Crop to robot height
@@ -850,27 +871,14 @@ class SparseVoxelMap(object):
         res[:2] = self.grid_coords_to_xy(grid_coords)
         return res
 
-    def get_kd_tree(self) -> open3d.geometry.KDTreeFlann:
-        """Return kdtree for collision checks
-
-        We could use Kaolin to get octree from pointcloud.
-        Not hard to parallelize on GPU:
-            Octree has K levels, each cube in level k corresponds to a  regular grid of "supervoxels"
-            Occupancy can be done for each level in parallel.
-        Hard part is converting to KDTreeFlann (or modifying the collision check to run on gpu)
-        """
-        points, _, _, rgb = self.voxel_pcd.get_pointcloud()
-        pcd = numpy_to_pcd(points.detach().cpu().numpy(), rgb.detach().cpu().numpy())
-        return open3d.geometry.KDTreeFlann(pcd)
-
     def show(
-        self, instances: bool = True, backend: str = "open3d", **backend_kwargs
+        self, backend: str = "open3d", **backend_kwargs
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Display the aggregated point cloud."""
         if backend == "open3d":
-            return self._show_open3d(instances, **backend_kwargs)
+            return self._show_open3d(**backend_kwargs)
         elif backend == "pytorch3d":
-            return self._show_pytorch3d(instances, **backend_kwargs)
+            return self._show_pytorch3d(**backend_kwargs)
         else:
             raise NotImplementedError(
                 f"Uknown backend {backend}, must be 'open3d' or 'pytorch3d"
@@ -882,7 +890,7 @@ class SparseVoxelMap(object):
         return points, rgb
 
     def _show_pytorch3d(
-        self, instances: bool = True, mock_plot: bool = False, **plot_scene_kwargs
+        self, mock_plot: bool = False, **plot_scene_kwargs
     ):
         from pytorch3d.vis.plotly_vis import AxisArgs, plot_scene
 
@@ -909,27 +917,6 @@ class SparseVoxelMap(object):
             ptc = Pointclouds(points=[points], features=[rgb])
         if ptc is not None:
             traces["Points"] = ptc
-
-        # Show instances
-        if instances:
-            if len(self.get_instances()) > 0:
-                bounds, names = zip(
-                    *[(v.bounds, v.category_id) for v in self.get_instances()]
-                )
-                detected_boxes = BBoxes3D(
-                    bounds=[torch.stack(bounds, dim=0)],
-                    # At some point we can color the boxes according to class, but that's not implemented yet
-                    # features = [categorcolors],
-                    names=[torch.stack(names, dim=0).unsqueeze(-1)],
-                )
-            else:
-                detected_boxes = BBoxes3D(
-                    bounds=[torch.zeros((2, 3, 2))],
-                    # At some point we can color the boxes according to class, but that's not implemented yet
-                    # features = [categorcolors],
-                    names=[torch.zeros((2, 1), dtype=torch.long)],
-                )
-            traces["IB"] = detected_boxes
 
         # Show cameras
         # "Fused boxes": global_boxes,
@@ -996,9 +983,6 @@ class SparseVoxelMap(object):
             )
         return True
 
-    def postprocess_instances(self):
-        self.instances.global_box_compression_and_nms(env_id=0)
-
     def _get_boxes_from_points(
         self,
         traversible: torch.Tensor,
@@ -1047,7 +1031,6 @@ class SparseVoxelMap(object):
 
     def _get_open3d_geometries(
         self,
-        instances: bool,
         orig: Optional[np.ndarray] = None,
         norm: float = 255.0,
         xyt: Optional[np.ndarray] = None,
@@ -1057,7 +1040,6 @@ class SparseVoxelMap(object):
         """Show and return bounding box information and rgb color information from an explored point cloud. Uses open3d."""
 
         # Create a combined point cloud
-        # Do the other stuff we need to show instances
         # pc_xyz, pc_rgb, pc_feats = self.get_data()
         points, _, _, rgb = self.voxel_pcd.get_pointcloud()
         pcd = numpy_to_pcd(
@@ -1083,46 +1065,6 @@ class SparseVoxelMap(object):
                 offset=xyt[:2],
             )
 
-        if instances:
-            for instance_view in self.get_instances():
-                mins, maxs = (
-                    instance_view.bounds[:, 0].cpu().numpy(),
-                    instance_view.bounds[:, 1].cpu().numpy(),
-                )
-                if np.any(maxs - mins < 1e-5):
-                    logger.info(f"Warning: bad box: {mins} {maxs}")
-                    continue
-                width, height, depth = maxs - mins
-
-                # Create a mesh to visualzie where the instances were seen
-                mesh_box = open3d.geometry.TriangleMesh.create_box(
-                    width=width, height=height, depth=depth
-                )
-
-                # Get vertex array from the mesh
-                vertices = np.asarray(mesh_box.vertices)
-
-                # Translate the vertices to the desired position
-                vertices += mins
-                triangles = np.asarray(mesh_box.triangles)
-
-                # Create a wireframe mesh
-                lines = []
-                for tri in triangles:
-                    lines.append([tri[0], tri[1]])
-                    lines.append([tri[1], tri[2]])
-                    lines.append([tri[2], tri[0]])
-
-                # color = [1.0, 0.0, 0.0]  # Red color (R, G, B)
-                color = np.random.random(3)
-                colors = [color for _ in range(len(lines))]
-                wireframe = open3d.geometry.LineSet(
-                    points=open3d.utility.Vector3dVector(vertices),
-                    lines=open3d.utility.Vector2iVector(lines),
-                )
-                # Get the colors and add to wireframe
-                wireframe.colors = open3d.utility.Vector3dVector(colors)
-                geoms.append(wireframe)
         return geoms
 
     def _get_o3d_robot_footprint_geometry(
@@ -1177,7 +1119,6 @@ class SparseVoxelMap(object):
 
     def _show_open3d(
         self,
-        instances: bool,
         orig: Optional[np.ndarray] = None,
         norm: float = 255.0,
         xyt: Optional[np.ndarray] = None,
@@ -1188,7 +1129,7 @@ class SparseVoxelMap(object):
 
         # get geometries so we can use them
         geoms = self._get_open3d_geometries(
-            instances, orig, norm, xyt=xyt, footprint=footprint
+            orig, norm, xyt=xyt, footprint=footprint
         )
 
         # Show the geometries of where we have explored
@@ -1197,67 +1138,3 @@ class SparseVoxelMap(object):
         # Returns xyz and rgb for further inspection
         points, _, _, rgb = self.voxel_pcd.get_pointcloud()
         return points, rgb
-
-    def get_ins_center_pos(self, idx):
-        return torch.mean(self.get_instances()[idx].point_cloud, axis=0)
-
-    def near(self, ins_a, ins_b):
-        dist = torch.pairwise_distance(
-            self.get_ins_center_pos(ins_a), self.get_ins_center_pos(ins_b)
-        ).item()
-        if dist < 0.3:  # TODO: set this in config
-            return True
-        return False
-
-    def on(self, ins_a, ins_b):
-        if (
-            self.near(ins_a, ins_b)
-            and self.get_ins_center_pos(ins_a)[2] > self.get_ins_center_pos(ins_b)[2]
-        ):
-            return True
-        return False
-
-    def extract_symbolic_spatial_info(self):
-        """Extract pairwise symbolic spatial relationship between instances using heurisitcs"""
-        instances = self.get_instances()
-        relationships = []
-        for idx_a, ins_a in enumerate(instances):
-            for idx_b, ins_b in enumerate(instances):
-                if idx_a == idx_b:
-                    continue
-                # if self.on(idx_a, idx_b):
-                #     relationships.append((idx_a, idx_b, "on"))
-                if self.near(idx_a, idx_b):
-                    relationships.append((idx_a, idx_b, "near"))
-
-        # show symbolic relationships
-        for idx_a, idx_b, rel in relationships:
-            import matplotlib.pyplot as plt
-
-            plt.subplot(1, 2, 1)
-            plt.imshow(
-                (
-                    instances[idx_a].get_best_view().cropped_image
-                    * instances[idx_a].get_best_view().mask
-                    / 255.0
-                )
-                .detach()
-                .cpu()
-                .numpy()
-            )
-            plt.title("Instance A is " + rel)
-            plt.axis("off")
-            plt.subplot(1, 2, 2)
-            plt.imshow(
-                (
-                    instances[idx_b].get_best_view().cropped_image
-                    * instances[idx_b].get_best_view().mask
-                    / 255.0
-                )
-                .detach()
-                .cpu()
-                .numpy()
-            )
-            plt.title("Instance B")
-            plt.axis("off")
-            plt.show()
