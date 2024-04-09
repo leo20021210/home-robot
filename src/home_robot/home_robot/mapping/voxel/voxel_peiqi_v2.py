@@ -35,13 +35,13 @@ from home_robot.utils.voxel import VoxelizedPointcloud, scatter3d
 
 import torch.nn.functional as F
 import torchvision.transforms.functional as V
-from segment_anything import sam_model_registry, SamPredictor
-from transformers import AutoProcessor, OwlViTForObjectDetection
+# from segment_anything import sam_model_registry, SamPredictor
+# from transformers import AutoProcessor, OwlViTForObjectDetection
 import clip
 from torchvision import transforms
 from home_robot.mapping.voxel.scannet import CLASS_LABELS_200
 import os
-import wget
+# import wget
 import cv2
 import time
 
@@ -131,7 +131,7 @@ class SparseVoxelMapV2(object):
         use_derivative_filter: bool = False,
         derivative_filter_threshold: float = 0.5,
         owl = False,
-        device = 'cuda'
+        device = 'cpu'
     ):
         """
         Args:
