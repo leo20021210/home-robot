@@ -26,13 +26,14 @@ import sophus as sp
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as V
-from segment_anything import sam_model_registry, SamPredictor
-from transformers import AutoProcessor, OwlViTForObjectDetection
+# from segment_anything import sam_model_registry, SamPredictor
+# from transformers import AutoProcessor, OwlViTForObjectDetection
 import clip
 from torchvision import transforms
 
 import os
-import wget
+# import wget
+import time
 
 from matplotlib import pyplot as plt
 
@@ -149,7 +150,7 @@ class SynchronizedSensors(object):
                 return None, None, None
 
             self.mask_predictor.set_image(rgb.permute(1,2,0).numpy())
-            bounding_boxes = torch.stack(sorted(results[0]['boxes'], key=lambda box: (box[2] - box[0]) * (box[3] - box[1])), dim = 0)
+            bounding_boxes = torch.stack(sorted(results[0]['boxes'], key=lambda box: (box[2] - box[0]) * (box[3] - box[1]), reverse = True), dim = 0)
             transformed_boxes = self.mask_predictor.transform.apply_boxes_torch(bounding_boxes.detach().to(self.device), rgb.shape[-2:])
             masks, _, _= self.mask_predictor.predict_torch(
                 point_coords=None,
@@ -191,9 +192,6 @@ class SynchronizedSensors(object):
 
         for (sam_mask, feature) in zip(masks.cpu(), features.cpu()):
             valid_mask = torch.logical_and(~mask[0], sam_mask)
-            # plt.imsave('a.jpg', ~mask[0])
-            # plt.imsave('b.jpg', sam_mask)
-            # plt.imsave('c.jpg', valid_mask)
             valid_xyz = world_xyz[valid_mask]
             if valid_xyz.shape[0] == 0:
                 return None, None, None
@@ -228,43 +226,52 @@ class SynchronizedSensors(object):
         #     self.color_init_time = color.header.stamp.to_sec()
         # self.color_time_step = color.header.stamp.to_sec()
         # self.color_number = 1 if not hasattr(self, 'color_number') else self.color_number + 1
+        # print('color arrives ', color.header.stamp.to_sec() - self._t, rospy.Time.now().to_sec() - self._t)
         # if self.color_number % 20 == 0:
         #     print('color freq ', (self.color_time_step - self.color_init_time) / self.color_number)
         # return 
         time_step = (time_step // self.slop_time_seconds) % self.queue_size
-        if time_step in self.depth_images and time_step in self.camera_poses:
-            camera_time, camera_pose = self.camera_poses[time_step]
-            depth_time, depth_image = self.depth_images[time_step]
-            if abs(depth_time - color.header.stamp.to_sec()) < self.slop_time_seconds and abs(camera_time - color.header.stamp.to_sec()) < self.slop_time_seconds:
-                print('rgb comes from', color.header.stamp.to_sec() - self._t)
-                print('depth comes from', depth_time - self._t)
-                print('pose comes from', camera_time - self._t)
-                xyz = self.depth_to_xyz(depth_image)
-                world_xyz = (
-                    np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
-                    @ camera_pose.T
-                )[..., :3]
-                world_xyz = torch.from_numpy(np.array(world_xyz))
-                rgb_image = image_to_numpy(color)
-                rgb_image = np.rot90(rgb_image, k = 3)
 
-                cv2.imwrite('debug_mahi/rgb' + str(self.step) + '.jpg', rgb_image[:, :, [2, 1, 0]])
-                np.save('debug_mahi/depth' + str(self.step) + '.npy', depth_image)
-                np.save('debug_mahi/xyz' + str(self.step) + '.npy', world_xyz)
-                self.step += 1
+        rgb_image = image_to_numpy(color)
+        rgb_image = np.rot90(rgb_image, k = 3)
+        self.rgb_images[time_step] = (color.header.stamp.to_sec(), rgb_image)
 
-                rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
-                depth_image = torch.from_numpy(np.array(depth_image))
-                self.add_image_to_voxel_map(rgb_image, depth_image, world_xyz)
+        # if time_step in self.depth_images and time_step in self.camera_poses:
+        #     camera_time, camera_pose = self.camera_poses[time_step]
+        #     depth_time, depth_image = self.depth_images[time_step]
+        #     # print(time_step, depth_time, camera_time, color.header.stamp.to_sec()) 
+        #     # print(self.slop_time_seconds, depth_time - color.header.stamp.to_sec(), camera_time - color.header.stamp.to_sec())
+        #     if abs(depth_time - color.header.stamp.to_sec()) < self.slop_time_seconds * 2 and abs(camera_time - color.header.stamp.to_sec()) < self.slop_time_seconds * 2:
+        #         self.step += 1
+        #         print('rgb comes from', color.header.stamp.to_sec() - self._t)
+        #         print('depth comes from', depth_time - self._t)
+        #         print('pose comes from', camera_time - self._t)
+
+        #         xyz = self.depth_to_xyz(depth_image)
+        #         world_xyz = (
+        #             np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
+        #             @ camera_pose.T
+        #         )[..., :3]
+        #         world_xyz = torch.from_numpy(np.array(world_xyz))
+        #         rgb_image = image_to_numpy(color)
+        #         rgb_image = np.rot90(rgb_image, k = 3)
+
+        #         cv2.imwrite('debug_mahi/rgb' + str(self.step) + '.jpg', rgb_image[:, :, [2, 1, 0]])
+        #         np.save('debug_mahi/depth' + str(self.step) + '.npy', depth_image)
+        #         np.save('debug_mahi/xyz' + str(self.step) + '.npy', world_xyz)
+
+        #         rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
+        #         depth_image = torch.from_numpy(np.array(depth_image))
+        #         self.add_image_to_voxel_map(rgb_image, depth_image, world_xyz)
 
     def _depth_callback(self, depth):
         depth_image = image_to_numpy(depth) / 1000.0
         depth_image = np.rot90(depth_image, k = 3)
-        # self.depth_image = torch.from_numpy(np.array(depth_image))
         # if not hasattr(self, 'depth_time_step'):
         #     self.depth_init_time = depth.header.stamp.to_sec()
         # self.depth_time_step = depth.header.stamp.to_sec()
         # self.depth_number = 1 if not hasattr(self, 'depth_number') else self.depth_number + 1
+        # print('depth arrives ', depth.header.stamp.to_sec() - self._t, rospy.Time.now().to_sec() - self._t)
         # if self.depth_number % 50 == 0:
         #     print('depth freq ', (self.depth_time_step - self.depth_init_time) / self.depth_number)
         time_step = depth.header.stamp.to_sec() - self._t
@@ -289,18 +296,19 @@ class SynchronizedSensors(object):
         camera_pose_topic,
         # pose_topic,
         verbose=True,
-        slop_time_seconds=0.1,
-        queue_size = 200,
+        slop_time_seconds=0.05,
+        queue_size = 50,
         owl = False,
-        device = 'cuda'
+        device = 'cpu'
     ):
-        self.step = 0
         self.slop_time_seconds = slop_time_seconds
         self.queue_size = queue_size
         self.verbose = verbose
         self._t = rospy.Time.now().to_sec()
+        self.step = 0
         self.camera_poses = dict()
         self.depth_images = dict()
+        self.rgb_images = dict()
         self._lock = threading.Lock()
 
         self.owl = owl
@@ -362,11 +370,38 @@ if __name__ == "__main__":
     t0 = rospy.Time.now()
     try:
         while not rospy.is_shutdown():
-            t1 = rospy.Time.now()
-            # print((t1 - t0).to_sec())
-            # times = sensor.get_times()
-            # for k, v in times.items():
-            #     print("-", k, v - t0.to_sec())
+            t1 = rospy.Time.now().to_sec()
+            # time.sleep(0.5)
+            # time_step = ((t1 - sensor._t) // sensor.slop_time_seconds) % sensor.queue_size
+            time_step = 0
+            if time_step in sensor.depth_images and time_step in sensor.camera_poses and time_step in sensor.rgb_images:
+                camera_time, camera_pose = sensor.camera_poses[time_step]
+                depth_time, depth_image = sensor.depth_images[time_step]
+                rgb_time, rgb_image = sensor.rgb_images[time_step]
+                print(depth_time - sensor._t, camera_time - sensor._t, rgb_time - sensor._t, t1 - sensor._t)
+                if abs(depth_time - rgb_time) < sensor.slop_time_seconds and abs(camera_time - rgb_time) < sensor.slop_time_seconds:
+                    start_time = rospy.Time.now().to_sec()
+                    sensor.step += 1
+                    print('rgb comes from', rgb_time - sensor._t)
+                    print('depth comes from', depth_time - sensor._t)
+                    print('pose comes from', camera_time - sensor._t)
+
+                    xyz = sensor.depth_to_xyz(depth_image)
+                    world_xyz = (
+                        np.concatenate((xyz, np.ones_like(xyz[..., [0]])), axis=-1)
+                        @ camera_pose.T
+                    )[..., :3]
+                    world_xyz = torch.from_numpy(np.array(world_xyz))
+
+                    cv2.imwrite('debug_mahi/rgb' + str(sensor.step) + '.jpg', rgb_image[:, :, [2, 1, 0]])
+                    np.save('debug_mahi/depth' + str(sensor.step) + '.npy', depth_image)
+                    np.save('debug_mahi/xyz' + str(sensor.step) + '.npy', world_xyz)
+
+                    rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
+                    depth_image = torch.from_numpy(np.array(depth_image))
+                    sensor.add_image_to_voxel_map(rgb_image, depth_image, world_xyz)
+            
+                    print(rospy.Time.now().to_sec() - start_time)
             rate.sleep()
     finally:
         print('Stop streaming images and write memory data')

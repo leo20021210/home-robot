@@ -63,7 +63,7 @@ Frame = namedtuple(
 
 VALID_FRAMES = ["camera", "world"]
 
-DEFAULT_GRID_SIZE = [1024, 1024]
+DEFAULT_GRID_SIZE = [512, 512]
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def ensure_tensor(arr):
         raise ValueError(f"arr of unknown type ({type(arr)}) cannot be cast to Tensor")
 
 
-class SparseVoxelMap(object):
+class SparseVoxelMapV2(object):
     """Create a voxel map object which captures 3d information.
 
     This class represents a 3D voxel map used for capturing environmental information. It provides various parameters
@@ -138,7 +138,7 @@ class SparseVoxelMap(object):
             resolution(float): in meters, size of a voxel
             feature_dim(int): size of feature embeddings to capture per-voxel point
         """
-        print('------------------------YOU ARE NOW RUNNING PEIQI VOXEL MAP CODES V1-----------------')
+        print('------------------------YOU ARE NOW RUNNING PEIQI VOXEL MAP CODES V2-----------------')
         # TODO: We an use fastai.store_attr() to get rid of this boilerplate code
         self.resolution = resolution
         self.feature_dim = feature_dim
@@ -203,8 +203,7 @@ class SparseVoxelMap(object):
         if grid_size is not None:
             self.grid_size = [grid_size[0], grid_size[1]]
         else:
-            # self.grid_size = DEFAULT_GRID_SIZE
-            self.grid_size = [500, 500]
+            self.grid_size = DEFAULT_GRID_SIZE
         # Track the center of the grid - (0, 0) in our coordinate system
         # We then just need to update everything when we want to track obstacles
         self.grid_origin = Tensor(self.grid_size + [0], device=map_2d_device) // 2
@@ -533,11 +532,11 @@ class SparseVoxelMap(object):
                     & (median_filter_error < self.median_filter_max_error).bool()
                 )
 
-        # if feats is None:
-        #     if not self.owl:
-        #         feats = self.run_mask_clip(rgb.permute(2, 0, 1))
-        #     else:
-        #         feats, valid_depth = self.run_owl_sam_clip(rgb.permute(2, 0, 1), valid_depth)
+        if feats is None:
+            if not self.owl:
+                feats = self.run_mask_clip(rgb.permute(2, 0, 1))
+            else:
+                feats, valid_depth = self.run_owl_sam_clip(rgb.permute(2, 0, 1), valid_depth)
 
         # print(feats.shape)
 
