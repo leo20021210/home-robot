@@ -121,7 +121,7 @@ class SparseVoxelMap(object):
         remove_visited_from_obstacles: bool = False,
         local_radius: float = 0.15,
         min_depth: float = 0.1,
-        max_depth: float = 4.0,
+        max_depth: float = 2.5,
         pad_obstacles: int = 0,
         voxel_kwargs: Dict[str, Any] = {},
         map_2d_device: str = "cpu",
@@ -131,7 +131,7 @@ class SparseVoxelMap(object):
         use_derivative_filter: bool = False,
         derivative_filter_threshold: float = 0.5,
         owl = False,
-        device = 'cuda'
+        device = 'cpu'
     ):
         """
         Args:
@@ -817,6 +817,7 @@ class SparseVoxelMap(object):
                 self.smooth_kernel,
             )[0, 0].bool()
 
+        debug = True
         if debug:
             import matplotlib.pyplot as plt
 
@@ -843,7 +844,7 @@ class SparseVoxelMap(object):
             plt.imshow(explored.detach().cpu().numpy())
             plt.axis("off")
             plt.title("explored")
-            plt.show()
+            # plt.show()
 
         # Update cache
         self._map2d = (obstacles, explored)

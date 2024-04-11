@@ -297,7 +297,7 @@ class SynchronizedSensors(object):
         # pose_topic,
         verbose=True,
         slop_time_seconds=0.05,
-        queue_size = 50,
+        queue_size = 25,
         owl = False,
         device = 'cpu'
     ):
@@ -378,7 +378,7 @@ if __name__ == "__main__":
                 camera_time, camera_pose = sensor.camera_poses[time_step]
                 depth_time, depth_image = sensor.depth_images[time_step]
                 rgb_time, rgb_image = sensor.rgb_images[time_step]
-                print(depth_time - sensor._t, camera_time - sensor._t, rgb_time - sensor._t, t1 - sensor._t)
+                # print(depth_time - sensor._t, camera_time - sensor._t, rgb_time - sensor._t, t1 - sensor._t)
                 if abs(depth_time - rgb_time) < sensor.slop_time_seconds and abs(camera_time - rgb_time) < sensor.slop_time_seconds:
                     start_time = rospy.Time.now().to_sec()
                     sensor.step += 1

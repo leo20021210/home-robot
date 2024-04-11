@@ -31,7 +31,7 @@ from home_robot.motion import (
 )
 
 import cv2
-
+from matplotlib import pyplot as plt
 
 class RobotAgentV2:
     """Basic demo code. Collects everything that we need to make this work."""
@@ -73,8 +73,8 @@ class RobotAgentV2:
                 local_radius=parameters["local_radius"],
                 obs_min_height=parameters["obs_min_height"],
                 obs_max_height=parameters["obs_max_height"],
-                min_depth=parameters["min_depth"],
-                max_depth=parameters["max_depth"],
+                # min_depth=parameters["min_depth"],
+                # max_depth=parameters["max_depth"],
                 pad_obstacles=parameters["pad_obstacles"],
                 add_local_radius_points=parameters.get(
                     "add_local_radius_points", default=True
@@ -138,6 +138,7 @@ class RobotAgentV2:
         step_size = 2 * np.pi / steps
         i = 0
         while i < steps:
+            print('-' * 20, 'step', i, '-'*20)
             self.robot.navigate_to([0, 0, step_size], relative=True, blocking=True)
             # TODO remove debug code
             # print(i, self.robot.get_base_pose())
@@ -193,18 +194,23 @@ class RobotAgentV2:
 
     def update(self, visualize_map=False):
         """Step the data collector. Get a single observation of the world. Remove bad points, such as those from too far or too near the camera. Update the 3d world representation."""
-        for tilt in [-0.3, -0.6]:
-            for pan in [1.5, 1, 0.5, 0, -0.5, -1, -1.5, -2, -2.5]:
+        for tilt in [-0.3, -0.5]:
+            if tilt == -0.3:
+                pans = [0.25, -0.25, -0.75, -1.25, -1.75]
+            else:
+                pans = reversed([0.25, -0.25, -0.75, -1.25, -1.75])
+            for pan in pans:
                 self.robot.head.set_pan_tilt(pan = pan, tilt = tilt)
-                time.sleep(0.2)
-                cv2.imwrite('debug_chris/debug' + str(self.obs_count) + '.jpg', self.robot.head.get_images()[0][:, :, [2, 1, 0]])
+                time.sleep(0.5)
+                # cv2.imwrite('debug_chris/debug' + str(self.obs_count) + '.jpg', self.robot.head.get_images()[0][:, :, [2, 1, 0]])
                 obs = self.robot.get_observation()
                 self.obs_history.append(obs)
                 self.obs_count += 1
-        # obs_count = self.obs_count
+                self.voxel_map.add_obs(obs)    
 
-        self.voxel_map.add_obs(obs)
         # Add observation - helper function will unpack it
+        self.voxel_map.get_2d_map(debug=True)
+        plt.savefig('debug' + str(self.obs_count) + '.jpg')
         if visualize_map:
             # Now draw 2d maps to show waht was happening
             self.voxel_map.get_2d_map(debug=True)

@@ -42,6 +42,7 @@ def plan_to_frontier(
     ):
         if goal is None:
             failed = True
+            print(" ------ No goal is found.")
             break
         goal = goal.cpu().numpy()
         print("       Start:", start)

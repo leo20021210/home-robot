@@ -120,8 +120,8 @@ class SparseVoxelMapV2(object):
         add_local_radius_points: bool = True,
         remove_visited_from_obstacles: bool = False,
         local_radius: float = 0.15,
-        min_depth: float = 0.1,
-        max_depth: float = 4.0,
+        min_depth: float = 0.25,
+        max_depth: float = 2.0,
         pad_obstacles: int = 0,
         voxel_kwargs: Dict[str, Any] = {},
         map_2d_device: str = "cpu",
@@ -816,6 +816,7 @@ class SparseVoxelMapV2(object):
                 self.smooth_kernel,
             )[0, 0].bool()
 
+        debug = True
         if debug:
             import matplotlib.pyplot as plt
 
@@ -842,7 +843,7 @@ class SparseVoxelMapV2(object):
             plt.imshow(explored.detach().cpu().numpy())
             plt.axis("off")
             plt.title("explored")
-            plt.show()
+            # plt.show()
 
         # Update cache
         self._map2d = (obstacles, explored)

@@ -112,7 +112,7 @@ class StretchNavigationClient(AbstractControlModule):
     def execute_trajectory(
         self,
         trajectory: List[np.ndarray],
-        pos_err_threshold: float = 0.2,
+        pos_err_threshold: float = 0.25,
         rot_err_threshold: float = 0.75,
         spin_rate: int = 10,
         verbose: bool = False,

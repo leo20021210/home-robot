@@ -30,6 +30,7 @@ from home_robot.motion import (
     SimplifyXYT,
 )
 
+from matplotlib import pyplot as plt
 
 class RobotAgent:
     """Basic demo code. Collects everything that we need to make this work."""
@@ -71,8 +72,8 @@ class RobotAgent:
                 local_radius=parameters["local_radius"],
                 obs_min_height=parameters["obs_min_height"],
                 obs_max_height=parameters["obs_max_height"],
-                min_depth=parameters["min_depth"],
-                max_depth=parameters["max_depth"],
+                # min_depth=parameters["min_depth"],
+                # max_depth=parameters["max_depth"],
                 pad_obstacles=parameters["pad_obstacles"],
                 add_local_radius_points=parameters.get(
                     "add_local_radius_points", default=True
@@ -136,6 +137,7 @@ class RobotAgent:
         step_size = 2 * np.pi / steps
         i = 0
         while i < steps:
+            print('-' * 20, 'step', i, '-'*20)
             self.robot.navigate_to([0, 0, step_size], relative=True, blocking=True)
             # TODO remove debug code
             # print(i, self.robot.get_base_pose())
@@ -198,6 +200,8 @@ class RobotAgent:
 
         self.voxel_map.add_obs(obs)
         # Add observation - helper function will unpack it
+        self.voxel_map.get_2d_map(debug=False)
+        plt.savefig('debug' + str(self.obs_count) + '.png')
         if visualize_map:
             # Now draw 2d maps to show waht was happening
             self.voxel_map.get_2d_map(debug=True)
