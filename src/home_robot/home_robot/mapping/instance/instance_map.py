@@ -47,7 +47,8 @@ logger = logging.getLogger(__name__)
 class ViewMatchingConfig:
     within_class: bool = True
 
-    box_match_mode: Bbox3dOverlapMethodEnum = Bbox3dOverlapMethodEnum.ONE_SIDED_IOU
+    # box_match_mode: Bbox3dOverlapMethodEnum = Bbox3dOverlapMethodEnum.ONE_SIDED_IOU
+    box_match_mode: Bbox3dOverlapMethodEnum = Bbox3dOverlapMethodEnum.IOU
     box_overlap_eps: float = 1e-7
     box_min_iou_thresh: float = 0.4
     box_overlap_weight: float = 0.15
@@ -127,7 +128,7 @@ class InstanceMemory:
         erode_mask_num_iter: int = 1,
         instance_view_score_aggregation_mode="max",
         min_pixels_for_instance_view=100,
-        log_dir: Optional[str] = "instances",
+        log_dir: Optional[str] = None,
         log_dir_overwrite_ok: bool = False,
         view_matching_config: ViewMatchingConfig = ViewMatchingConfig(),
         mask_cropped_instances: bool = True,
@@ -181,9 +182,9 @@ class InstanceMemory:
         # self.instance_association_within_class = instance_association_within_class
         self.log_dir = log_dir
 
-        if log_dir is not None and os.makedirs(log_dir, exist_ok=log_dir_overwrite_ok):
-            shutil.rmtree(self.save_dir, ignore_errors=True)
-            os.makedirs(log_dir, exist_ok=log_dir_overwrite_ok)
+        # if log_dir is not None and os.makedirs(log_dir, exist_ok=log_dir_overwrite_ok):
+        #     shutil.rmtree(self.save_dir, ignore_errors=True)
+        #     os.makedirs(log_dir, exist_ok=log_dir_overwrite_ok)
         self.log_dir = log_dir
 
         # if open_vocab_cat_map_file:

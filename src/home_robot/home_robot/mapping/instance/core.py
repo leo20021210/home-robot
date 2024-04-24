@@ -117,7 +117,7 @@ class Instance:
 
     def get_image_embedding(self, aggregation_method="max", normalize: bool = True):
         """Get the combined image embedding across all views"""
-        view_embeddings = [view.embedding for view in self.instance_views]
+        view_embeddings = [view.embedding / view.embedding.norm(dim=-1, keepdim=True) for view in self.instance_views]
         if len(view_embeddings) > 0 and view_embeddings[0] is None:
             return [None] * len(view_embeddings)
         # Create one tensor for all of these
