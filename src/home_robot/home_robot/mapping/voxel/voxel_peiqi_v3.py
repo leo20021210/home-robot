@@ -75,7 +75,7 @@ def ensure_tensor(arr):
         raise ValueError(f"arr of unknown type ({type(arr)}) cannot be cast to Tensor")
 
 
-class SparseVoxelMapV2(object):
+class SparseVoxelMapV3(object):
     """Create a voxel map object which captures 3d information.
 
     This class represents a 3D voxel map used for capturing environmental information. It provides various parameters
@@ -130,15 +130,13 @@ class SparseVoxelMapV2(object):
         median_filter_max_error: float = 0.01,
         use_derivative_filter: bool = False,
         derivative_filter_threshold: float = 0.5,
-        owl = False,
-        device = 'cpu'
     ):
         """
         Args:
             resolution(float): in meters, size of a voxel
             feature_dim(int): size of feature embeddings to capture per-voxel point
         """
-        print('------------------------YOU ARE NOW RUNNING PEIQI VOXEL MAP CODES V2-----------------')
+        print('------------------------YOU ARE NOW RUNNING PEIQI VOXEL MAP CODES V3-----------------')
         # TODO: We an use fastai.store_attr() to get rid of this boilerplate code
         self.resolution = resolution
         self.feature_dim = feature_dim
@@ -212,20 +210,6 @@ class SparseVoxelMapV2(object):
         # Used for tensorized bounds checks
         self._grid_size_t = Tensor(self.grid_size, device=map_2d_device)
 
-        self.owl = owl
-        self.device = device
-        self.clip_model, self.clip_preprocess = clip.load("ViT-B/16", device=device)
-        self.clip_model.eval()
-        if self.owl:
-            self.owl_processor = AutoProcessor.from_pretrained("google/owlvit-base-patch32")
-            self.owl_model = OwlViTForObjectDetection.from_pretrained("google/owlvit-base-patch32").eval().to(device)
-            if not os.path.exists('sam_vit_b_01ec64.pth'):
-                wget.download('https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth', out = 'sam_vit_b_01ec64.pth')
-            sam = sam_model_registry['vit_b'](checkpoint='sam_vit_b_01ec64.pth')
-            self.mask_predictor = SamPredictor(sam)
-            self.mask_predictor.model = self.mask_predictor.model.eval().to(device)
-            self.texts = [['a photo of ' + text for text in CLASS_LABELS_200]]
-
         # Init variables
         self.reset()
 
@@ -257,116 +241,6 @@ class SparseVoxelMapV2(object):
         # This is computed from our various point clouds
         self._map2d = None
 
-    def fix_type(self, tensor: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
-        """Convert to tensor and float"""
-        if tensor is None:
-            return None
-        if isinstance(tensor, np.ndarray):
-            tensor = torch.from_numpy(tensor)
-        return tensor.float()
-    
-    def forward_one_block(self, resblocks, x):
-        q, k, v = None, None, None
-        y = resblocks.ln_1(x)
-        y = F.linear(y, resblocks.attn.in_proj_weight, resblocks.attn.in_proj_bias)
-        N, L, C = y.shape
-        y = y.view(N, L, 3, C//3).permute(2, 0, 1, 3).reshape(3*N, L, C//3)
-        y = F.linear(y, resblocks.attn.out_proj.weight, resblocks.attn.out_proj.bias)
-        q, k, v = y.tensor_split(3, dim=0)
-        v += x
-        v = v + resblocks.mlp(resblocks.ln_2(v))
-
-        return v
-
-    def extract_mask_clip_features(self, x, image_shape):
-        with torch.no_grad():
-            x = self.clip_model.visual.conv1(x)
-            N, L, H, W = x.shape
-            x = x.reshape(x.shape[0], x.shape[1], -1)
-            x = x.permute(0, 2, 1)
-            x = torch.cat([self.clip_model.visual.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)
-            x = x + self.clip_model.visual.positional_embedding.to(x.dtype)
-            x = self.clip_model.visual.ln_pre(x)
-            x = x.permute(1, 0, 2)
-            for idx in range(self.clip_model.visual.transformer.layers):
-                if idx == self.clip_model.visual.transformer.layers - 1:
-                    break
-                x = self.clip_model.visual.transformer.resblocks[idx](x)
-            x = self.forward_one_block(self.clip_model.visual.transformer.resblocks[-1], x)
-            x = x[1:]
-            x = x.permute(1, 0, 2)
-            x = self.clip_model.visual.ln_post(x)
-            x = x @ self.clip_model.visual.proj
-            feat = x.reshape(N, H, W, -1).permute(0, 3, 1, 2)
-        feat = F.interpolate(feat, image_shape, mode = 'bilinear', align_corners = True)
-        feat = F.normalize(feat, dim = 1)
-        return feat.permute(0, 2, 3, 1)
-    
-    def run_mask_clip(self, rgb):
-        with torch.no_grad():
-            if self.device == 'cpu':
-                input = self.clip_preprocess(transforms.ToPILImage()(rgb)).unsqueeze(0).to(self.device)
-            else:
-                input = self.clip_preprocess(transforms.ToPILImage()(rgb)).unsqueeze(0).to(self.device).half()
-            features = self.extract_mask_clip_features(input, rgb.shape[-2:])[0].cpu()
-    
-        # cur_time = time.time()
-        # image_vis = np.array(rgb.permute(1, 2, 0))
-        # image_vis = cv2.cvtColor(image_vis, cv2.COLOR_RGB2BGR)
-        # cv2.imwrite("debug_chris/clean" + str(cur_time) + ".jpg", image_vis)
-        return features
-    
-    def run_owl_sam_clip(self, rgb, valid_depth):
-        with torch.no_grad():
-            inputs = self.owl_processor(text=self.texts, images=rgb, return_tensors="pt")
-            for input in inputs:
-                inputs[input] = inputs[input].to(self.device)
-            outputs = self.owl_model(**inputs)
-            target_sizes = torch.Tensor([rgb.size()[-2:]]).to(self.device)
-            results = self.owl_processor.post_process_object_detection(outputs=outputs, threshold=0.15, target_sizes=target_sizes)
-            if len(results[0]['boxes']) == 0:
-                return None, None, None
-
-            self.mask_predictor.set_image(rgb.permute(1,2,0).numpy())
-            bounding_boxes = torch.stack(sorted(results[0]['boxes'], key=lambda box: (box[2] - box[0]) * (box[3] - box[1]), revers = True), dim = 0)
-            transformed_boxes = self.mask_predictor.transform.apply_boxes_torch(bounding_boxes.detach().to(self.device), rgb.shape[-2:])
-            masks, _, _= self.mask_predictor.predict_torch(
-                point_coords=None,
-                point_labels=None,
-                boxes=transformed_boxes,
-                multimask_output=False
-            )
-            masks = masks[:, 0, :, :].cpu()
-
-            cur_time = time.time()
-            image_vis = np.array(rgb.permute(1, 2, 0))
-            image_vis = cv2.cvtColor(image_vis, cv2.COLOR_RGB2BGR)
-            cv2.imwrite("debug_chris/clean" + str(cur_time) + ".jpg", image_vis)
-            for idx, box in enumerate(bounding_boxes):
-                tl_x, tl_y, br_x, br_y = box
-                tl_x, tl_y, br_x, br_y = tl_x.item(), tl_y.item(), br_x.item(), br_y.item()
-                cv2.rectangle(image_vis, (int(tl_x), int(tl_y)), (int(br_x), int(br_y)), (255, 0, 0), 2)
-            cv2.imwrite("debug_chris/seg" + str(cur_time) + ".jpg", image_vis)
-    
-            crops = []
-            for box in bounding_boxes:
-                tl_x, tl_y, br_x, br_y = box
-                crops.append(self.clip_preprocess(transforms.ToPILImage()(rgb[:, max(int(tl_y), 0): min(int(br_y), rgb.shape[1]), max(int(tl_x), 0): min(int(br_x), rgb.shape[2])])))
-            features = self.clip_model.encode_image(torch.stack(crops, dim = 0).to(self.device))
-            features = F.normalize(features, dim = -1).cpu()
-
-        feats = torch.empty((rgb.shape[-2], rgb.shape[-1], features.shape[-1]), dtype=features.dtype)
-        final_mask = torch.full_like(valid_depth, fill_value=False, dtype=torch.bool)
-
-        for (sam_mask, feature) in zip(masks.cpu(), features.cpu()):
-            valid_mask = torch.logical_and(valid_depth, sam_mask)
-            # cv2.imwrite('debug1.jpg', sam_mask.int().numpy() * 255)
-            # cv2.imwrite('debug2.jpg', valid_depth.int().numpy() * 255)
-            feats[valid_mask] = feature
-            final_mask[valid_mask] = True
-        
-        return feats, final_mask
-
     def add_obs(
         self,
         obs: Observations,
@@ -375,22 +249,15 @@ class SparseVoxelMapV2(object):
         **kwargs,
     ):
         """Unpack an observation and convert it properly, then add to memory. Pass all other inputs into the add() function as provided."""
-        rgb = self.fix_type(obs.rgb)
-        depth = self.fix_type(obs.depth)
-        xyz = self.fix_type(obs.xyz)
-        camera_pose = self.fix_type(obs.camera_pose)
+        rgb = self.fix_data_type(obs.rgb)
+        depth = self.fix_data_type(obs.depth)
+        xyz = self.fix_data_type(obs.xyz)
+        camera_pose = self.fix_data_type(obs.camera_pose)
         base_pose = torch.from_numpy(
             np.array([obs.gps[0], obs.gps[1], obs.compass[0]])
         ).float()
-        K = self.fix_type(obs.camera_K) if camera_K is None else camera_K
-
-        # # Allow task_observations to provide semantic sensor
-        # def _pop_with_task_obs_default(k, default=None):
-        #     res = kwargs.pop(k, task_obs.get(k, None))
-        #     if res is not None:
-        #         res = self.fix_type(res)
-        #     return res
-
+        K = self.fix_data_type(obs.camera_K) if camera_K is None else camera_K
+        
         self.add(
             camera_pose=camera_pose,
             xyz=xyz,
@@ -501,11 +368,6 @@ class SparseVoxelMapV2(object):
                 pose=camera_pose.unsqueeze(0),
                 inv_intrinsics=torch.linalg.inv(camera_K[:3, :3]).unsqueeze(0),
             )
-        # if feats is None:
-        #     if not self.owl:
-        #         feats = self.run_mask_clip(rgb.permute(2, 0, 1))
-        #     else:
-        #         feats, valid_depth = self.run_owl_sam_clip(rgb.permute(2, 0, 1), valid_depth)
         # add observations before we start changing things
         self.observations.append(
             Frame(

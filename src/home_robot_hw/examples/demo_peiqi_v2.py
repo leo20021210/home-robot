@@ -19,11 +19,13 @@ from PIL import Image
 
 # Mapping and perception
 from home_robot.agent.multitask import get_parameters
-from home_robot.agent.multitask import RobotAgentV2 as RobotAgent
+from home_robot.agent.multitask import RobotAgentV3 as RobotAgent
 
 # Chat and UI tools
 from home_robot.utils.point_cloud import numpy_to_pcd, show_point_cloud
 from home_robot_hw.remote import StretchClient
+
+import threading
 
 
 @click.command()
@@ -39,7 +41,7 @@ from home_robot_hw.remote import StretchClient
 @click.option(
     "--input-path",
     type=click.Path(),
-    default="output.pkl",
+    default=None,
     help="Input path with default value 'output.npy'",
 )
 def main(
@@ -48,12 +50,9 @@ def main(
     manual_wait,
     output_filename,
     navigate_home: bool = True,
-    # device_id: int = 0,
-    # verbose: bool = True,
     show_intermediate_maps: bool = False,
-    # random_goals: bool = True,
-    # force_explore: bool = False,
     explore_iter: int = 10,
+    input_path: str = None,
     **kwargs,
 ):
     """
@@ -72,11 +71,11 @@ def main(
     click.echo("Will connect to a Stretch robot and collect a short trajectory.")
     print("- Connect to Stretch")
     robot = StretchClient()
-    robot.nav.navigate_to([0, 0, 0])
+    # robot.nav.navigate_to([0, 0, 0])
 
     print("- Load parameters")
     parameters = get_parameters("src/home_robot_hw/configs/default.yaml")
-    print(parameters)
+    # print(parameters)
     if explore_iter >= 0:
         parameters["exploration_steps"] = explore_iter
     object_to_find, location_to_place = None, None
@@ -86,27 +85,48 @@ def main(
     demo = RobotAgent(
         robot, parameters
     )
-    demo.rotate_in_place(
-        steps=3,
-        visualize=False,  # show_intermediate_maps,
-    )
-    demo.run_exploration(
-        rate,
-        manual_wait,
-        explore_iter=parameters["exploration_steps"],
-        task_goal=object_to_find,
-        go_home_at_end=navigate_home,
-        visualize=show_intermediate_maps,
-    )
-    pc_xyz, pc_rgb = demo.voxel_map.get_xyz_rgb()
-    torch.save(demo.voxel_map.voxel_pcd, 'memory_chris.pt')
-    if len(output_pcd_filename) > 0:
-        print(f"Write pcd to {output_pcd_filename}...")
-        pcd = numpy_to_pcd(pc_xyz, pc_rgb / 255)
-        open3d.io.write_point_cloud(output_pcd_filename, pcd)
-    if len(output_pkl_filename) > 0:
-        print(f"Write pkl to {output_pkl_filename}...")
-        demo.voxel_map.write_to_pickle(output_pkl_filename)
+
+    robot1 = StretchClient()
+    def send_image():
+        while True:
+            obs = robot1.get_observation()
+            demo.image_sender.send_images(obs)
+
+    img_thread = threading.Thread(target=send_image)
+    img_thread.daemon = True
+    img_thread.start()
+
+    if input_path:
+        print('start reading from old pickle file')
+        demo.voxel_map.read_from_pickle(filename = input_path)
+        print('finish reading from old pickle file')
+    else:
+        demo.robot.head.set_pan_tilt(pan = 0, tilt = -0.6)
+        demo.rotate_in_place()
+        demo.robot.head.set_pan_tilt(pan = 0, tilt = -0.3)
+        demo.rotate_in_place()
+
+        demo.run_exploration(
+            rate,
+            manual_wait,
+            explore_iter=parameters["exploration_steps"],
+            task_goal=object_to_find,
+            go_home_at_end=navigate_home,
+            visualize=show_intermediate_maps,
+        )
+        pc_xyz, pc_rgb = demo.voxel_map.get_xyz_rgb()
+        torch.save(demo.voxel_map.voxel_pcd, 'memory_chris.pt')
+        if len(output_pcd_filename) > 0:
+            print(f"Write pcd to {output_pcd_filename}...")
+            pcd = numpy_to_pcd(pc_xyz, pc_rgb / 255)
+            open3d.io.write_point_cloud(output_pcd_filename, pcd)
+        if len(output_pkl_filename) > 0:
+            print(f"Write pkl to {output_pkl_filename}...")
+            demo.voxel_map.write_to_pickle(output_pkl_filename)
+    while True:
+        text = input('Enter object name: ')
+        point = demo.image_sender.query_text(text)
+        demo.navigate(point)
 
 
 

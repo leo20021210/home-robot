@@ -18,7 +18,7 @@ from loguru import logger
 from home_robot.agent.multitask import Parameters
 from home_robot.core.robot import RobotClient
 from home_robot.mapping.voxel import (
-    SparseVoxelMapV2,
+    SparseVoxelMapV3 as SparseVoxelMap,
     SparseVoxelMapNavigationSpace,
     plan_to_frontier,
 )
@@ -30,10 +30,12 @@ from home_robot.motion import (
     SimplifyXYT,
 )
 
+from home_robot.agent.multitask.image_sender import ImageSender
+
 import cv2
 from matplotlib import pyplot as plt
 
-class RobotAgentV2:
+class RobotAgentV3:
     """Basic demo code. Collects everything that we need to make this work."""
 
     _retry_on_fail = False
@@ -42,9 +44,9 @@ class RobotAgentV2:
         self,
         robot: RobotClient,
         parameters: Dict[str, Any],
-        voxel_map: Optional[SparseVoxelMapV2] = None,
+        voxel_map: Optional[SparseVoxelMap] = None,
     ):
-        print('------------------------YOU ARE NOW RUNNING PEIQI CODES V2-----------------')
+        print('------------------------YOU ARE NOW RUNNING PEIQI CODES V3-----------------')
         if isinstance(parameters, Dict):
             self.parameters = Parameters(**parameters)
         elif isinstance(parameters, Parameters):
@@ -52,6 +54,7 @@ class RobotAgentV2:
         else:
             raise RuntimeError(f"parameters of unsupported type: {type(parameters)}")
         self.robot = robot
+        self.robot.move_to_nav_posture()
 
         self.normalize_embeddings = True
         self.pos_err_threshold = parameters["trajectory_pos_err_threshold"]
@@ -62,19 +65,19 @@ class RobotAgentV2:
             parameters.guarantee_instance_is_reachable
         )
 
+        self.image_sender = ImageSender()
+
         # Expanding frontier - how close to frontier are we allowed to go?
         self.default_expand_frontier_size = parameters["default_expand_frontier_size"]
 
         if voxel_map is not None:
             self.voxel_map = voxel_map
         else:
-            self.voxel_map = SparseVoxelMapV2(
+            self.voxel_map = SparseVoxelMap(
                 resolution=parameters["voxel_size"],
                 local_radius=parameters["local_radius"],
                 obs_min_height=parameters["obs_min_height"],
                 obs_max_height=parameters["obs_max_height"],
-                # min_depth=parameters["min_depth"],
-                # max_depth=parameters["max_depth"],
                 pad_obstacles=parameters["pad_obstacles"],
                 add_local_radius_points=parameters.get(
                     "add_local_radius_points", default=True
@@ -126,13 +129,13 @@ class RobotAgentV2:
         """Returns reference to the navigation space."""
         return self.space
 
-    def rotate_in_place(self, steps: int = 12, visualize: bool = True) -> bool:
+    def rotate_in_place(self, steps: int = 8, visualize: bool = False) -> bool:
         """Simple helper function to make the robot rotate in place. Do a 360 degree turn to get some observations (this helps debug the robot and create a nice map).
 
         Returns:
             executed(bool): false if we did not actually do any rotations"""
         logger.info("Rotate in place")
-        self.robot.move_to_nav_posture()
+        # self.robot.move_to_nav_posture()
         if steps <= 0:
             return False
         step_size = 2 * np.pi / steps
@@ -159,26 +162,6 @@ class RobotAgentV2:
 
         return True
 
-    def get_observations(self, task=None):
-        from home_robot.utils.rpc import get_obj_centric_world_representation
-
-        instances = self.voxel_map.get_instances()
-        world_representation = get_obj_centric_world_representation(
-            instances,
-            self.parameters["vlm_context_length"],
-            self.parameters["sample_strategy"],
-            task=task,
-        )
-        return world_representation
-
-    def say(self, msg: str):
-        """Provide input either on the command line or via chat client"""
-        print(msg)
-
-    def ask(self, msg: str) -> str:
-        """Receive input from the user either via the command line or something else"""
-        return input(msg)
-
     def get_command(self):
         if (
             "command" in self.parameters.data.keys()
@@ -190,31 +173,18 @@ class RobotAgentV2:
     def __del__(self):
         """Clean up at the end if possible"""
         print("... Done.")
-        
 
-    def update(self, visualize_map=False):
+    def update(self):
         """Step the data collector. Get a single observation of the world. Remove bad points, such as those from too far or too near the camera. Update the 3d world representation."""
-        for tilt in [-0.3, -0.5]:
-            if tilt == -0.3:
-                pans = [0.75, 0.25, -0.25, -0.75, -1.25, -1.75]
-            else:
-                pans = reversed([0.75, 0.25, -0.25, -0.75, -1.25, -1.75])
-            for pan in pans:
-                self.robot.head.set_pan_tilt(pan = pan, tilt = tilt)
-                time.sleep(0.5)
-                # cv2.imwrite('debug_chris/debug' + str(self.obs_count) + '.jpg', self.robot.head.get_images()[0][:, :, [2, 1, 0]])
-                obs = self.robot.get_observation()
-                self.obs_history.append(obs)
-                self.obs_count += 1
-                self.voxel_map.add_obs(obs)    
+        obs = self.robot.get_observation()
+        # self.image_sender.send_images(obs)
+        self.obs_history.append(obs)
+        self.obs_count += 1
+        self.voxel_map.add_obs(obs)    
 
         # Add observation - helper function will unpack it
         self.voxel_map.get_2d_map(debug=True)
-        plt.savefig('debug' + str(self.obs_count) + '.jpg')
-        self.robot.head.set_pan_tilt(pan = 0, tilt = -0.5)
-        if visualize_map:
-            # Now draw 2d maps to show waht was happening
-            self.voxel_map.get_2d_map(debug=True)
+        plt.savefig('debug/debug' + str(self.obs_count) + '.jpg')
 
     def go_home(self):
         """Simple helper function to send the robot home safely after a trial."""
@@ -362,7 +332,11 @@ class RobotAgentV2:
                     )
 
             # Append latest observations
-            self.update()
+            # self.update()
+            self.robot.head.set_pan_tilt(pan = 0, tilt = -0.6)
+            self.rotate_in_place()
+            self.robot.head.set_pan_tilt(pan = 0, tilt = -0.3)
+            self.rotate_in_place()
             # self.save_svm("", filename=f"debug_svm_{i:03d}.pkl")
             if visualize:
                 # After doing everything - show where we will move to
@@ -378,22 +352,79 @@ class RobotAgentV2:
                 input("... press enter ...")
 
         # if it fails to find any frontier in the given iteration, simply quit in sim
-        if no_success_explore:
-            print("The robot did not explore at all, force quit in sim")
-            self.robot.force_quit = True
+        # if no_success_explore:
+        #     print("The robot did not explore at all, force quit in sim")
+        #     self.robot.force_quit = True
 
-        if go_home_at_end:
-            # Finally - plan back to (0,0,0)
-            print("Go back to (0, 0, 0) to finish...")
+        # if go_home_at_end:
+        #     # Finally - plan back to (0,0,0)
+        #     print("Go back to (0, 0, 0) to finish...")
+        #     start = self.robot.get_base_pose()
+        #     goal = np.array([0, 0, 0])
+        #     res = self.planner.plan(start, goal)
+        #     # if it fails, skip; else, execute a trajectory to this position
+        #     if res.success:
+        #         print("Full plan to home:")
+        #         for i, pt in enumerate(res.trajectory):
+        #             print("-", i, pt.state)
+        #         if not dry_run:
+        #             self.robot.execute_trajectory([pt.state for pt in res.trajectory])
+        #     else:
+        #         print("WARNING: planning to home failed!")
+
+    def navigate(self, point, max_tries = 1000, radius_m = 0.7, visualize = False, verbose = True):
+        print(point)
+        target_grid = self.voxel_map.xy_to_grid_coords(point[:2]).int()
+        obstacles, explored = self.voxel_map.get_2d_map()
+        point_mask = torch.zeros_like(explored)
+        point_mask[target_grid[0]: target_grid[0] + 2, target_grid[1]: target_grid[1] + 2] = True
+        res = None
+        try_count = 0
+        for goal in self.space.sample_near_mask(point_mask, radius_m=radius_m):
             start = self.robot.get_base_pose()
-            goal = np.array([0, 0, 0])
-            res = self.planner.plan(start, goal)
-            # if it fails, skip; else, execute a trajectory to this position
-            if res.success:
-                print("Full plan to home:")
-                for i, pt in enumerate(res.trajectory):
-                    print("-", i, pt.state)
-                if not dry_run:
-                    self.robot.execute_trajectory([pt.state for pt in res.trajectory])
-            else:
-                print("WARNING: planning to home failed!")
+            goal = goal.cpu().numpy()
+            print("       Start:", start)
+            print("Sampled Goal:", goal)
+            start_is_valid = self.space.is_valid(start, verbose=True)
+            goal_is_valid = self.space.is_valid(goal, verbose=False)
+            if verbose:
+                print("Start is valid:", start_is_valid)
+                print(" Goal is valid:", goal_is_valid)
+            if not goal_is_valid:
+                print(" -> resample goal.")
+                continue
+
+            res = self.planner.plan(start, goal, verbose=False)
+            if verbose:
+                print("Found plan:", res.success)
+            try_count += 1
+            if res.success or try_count > max_tries:
+                break
+
+        all_starts, all_goals = [], []
+        if res and res.success:
+            for i, pt in enumerate(res.trajectory):
+                print(i, pt.state)
+                all_starts.append(start)
+                all_goals.append(res.trajectory[-1].state)
+            if visualize:
+                print("Showing goal location:")
+                robot_center = np.zeros(3)
+                robot_center[:2] = self.robot.get_base_pose()[:2]
+                self.voxel_map.show(
+                    orig=robot_center,
+                    xyt=res.trajectory[-1].state,
+                    footprint=self.robot.get_robot_model().get_footprint(),
+                )
+            self.robot.execute_trajectory(
+                [pt.state for pt in res.trajectory],
+                pos_err_threshold=self.pos_err_threshold,
+                rot_err_threshold=self.rot_err_threshold,
+            )
+        else:
+            print('Navigation Failure!')
+        cv2.imwrite(text + '.jpg', self.robot.get_observation().rgb)
+        # self.robot.head.set_pan_tilt(pan = 0, tilt = -0.6)
+        # self.rotate_in_place()
+        # self.robot.head.set_pan_tilt(pan = 0, tilt = -0.3)
+        # self.rotate_in_place()

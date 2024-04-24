@@ -161,27 +161,19 @@ class SynchronizedSensors(object):
             masks = masks[:, 0, :, :].cpu()
 
             
-            cur_time = rospy.Time.now().to_sec() - self._t
             image_vis = np.array(rgb.permute(1, 2, 0))
-            image_vis = cv2.cvtColor(image_vis, cv2.COLOR_RGB2BGR)
-            cv2.imwrite("debug_mahi/clean" + str(cur_time) + ".jpg", image_vis)
+            segmentation_color_map = np.zeros(image_vis.shape, dtype=np.uint8)
+            cv2.imwrite('clean' + '.jpg', cv2.cvtColor(image_vis, cv2.COLOR_RGB2BGR))
             for idx, box in enumerate(bounding_boxes):
                 tl_x, tl_y, br_x, br_y = box
                 tl_x, tl_y, br_x, br_y = tl_x.item(), tl_y.item(), br_x.item(), br_y.item()
+                print(tl_x, tl_y, br_x, br_y)
                 cv2.rectangle(image_vis, (int(tl_x), int(tl_y)), (int(br_x), int(br_y)), (255, 0, 0), 2)
-            cv2.imwrite("debug_mahi/seg" + str(cur_time) + ".jpg", image_vis)
-            # for idx, box in enumerate(bounding_boxes):
-            #     image_vis = np.array(rgb.permute(1, 2, 0))
-            #     # cv2.imwrite("Clean.jpg", image)
-            #     tl_x, tl_y, br_x, br_y = box
-            #     tl_x, tl_y, br_x, br_y = tl_x.item(), tl_y.item(), br_x.item(), br_y.item()
-            #     image_vis = cv2.cvtColor(image_vis, cv2.COLOR_RGB2BGR)
-            #     cv2.rectangle(image_vis, (int(tl_x), int(tl_y)), (int(br_x), int(br_y)), (255, 0, 0), 2)
-            #     segmentation_color_map = np.zeros(image_vis.shape, dtype=np.uint8)
-            #     vis_mask = masks[idx]
-            #     segmentation_color_map[vis_mask.detach().cpu().numpy()] = [0, 255, 0]
-            #     image_vis = cv2.addWeighted(image_vis, 0.7, segmentation_color_map, 0.3, 0)
-            #     cv2.imwrite("debug/seg" + str(cur_time) + "_" + str(idx) + ".jpg", image_vis)
+            image_vis = cv2.cvtColor(image_vis, cv2.COLOR_RGB2BGR) 
+            for mask in masks:
+                segmentation_color_map[mask.detach().cpu().numpy()] = [0, 255, 0]
+            image_vis = cv2.addWeighted(image_vis, 0.7, segmentation_color_map, 0.3, 0)
+            cv2.imwrite("seg" + ".jpg", image_vis)
     
             crops = []
             for box in bounding_boxes:
@@ -393,9 +385,9 @@ if __name__ == "__main__":
                     )[..., :3]
                     world_xyz = torch.from_numpy(np.array(world_xyz))
 
-                    cv2.imwrite('debug_mahi/rgb' + str(sensor.step) + '.jpg', rgb_image[:, :, [2, 1, 0]])
-                    np.save('debug_mahi/depth' + str(sensor.step) + '.npy', depth_image)
-                    np.save('debug_mahi/xyz' + str(sensor.step) + '.npy', world_xyz)
+                    # cv2.imwrite('debug_mahi/rgb' + str(sensor.step) + '.jpg', rgb_image[:, :, [2, 1, 0]])
+                    # np.save('debug_mahi/depth' + str(sensor.step) + '.npy', depth_image)
+                    # np.save('debug_mahi/xyz' + str(sensor.step) + '.npy', world_xyz)
 
                     rgb_image = torch.from_numpy(np.array(rgb_image)).permute(2, 0, 1)
                     depth_image = torch.from_numpy(np.array(depth_image))
@@ -404,5 +396,6 @@ if __name__ == "__main__":
                     print(rospy.Time.now().to_sec() - start_time)
             rate.sleep()
     finally:
-        print('Stop streaming images and write memory data')
+        print('Stop streaming images and write memory data, might take a while, please wait')
         torch.save(sensor.voxel_pcd, 'memory_mahi.pt')
+        print('finished')

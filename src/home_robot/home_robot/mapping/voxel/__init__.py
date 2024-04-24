@@ -5,6 +5,6 @@
 from .planners import plan_to_frontier
 # from .voxel import SparseVoxelMap
 from .voxel_peiqi import SparseVoxelMap
-from .voxel_peiqi_v2 import SparseVoxelMapV2
+from .voxel_peiqi_v3 import SparseVoxelMapV3
 # from .voxel_map import SparseVoxelMapNavigationSpace
 from .voxel_map_peiqi import SparseVoxelMapNavigationSpace

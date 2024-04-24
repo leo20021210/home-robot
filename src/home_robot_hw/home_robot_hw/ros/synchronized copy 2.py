@@ -66,7 +66,7 @@ class SynchronizedSensors(object):
         scan_topic,
         pose_topic,
         verbose=False,
-        slop_time_seconds=0.05,
+        slop_time_seconds=0.02,
     ):
         self.verbose = verbose
         self._t = rospy.Time(0)

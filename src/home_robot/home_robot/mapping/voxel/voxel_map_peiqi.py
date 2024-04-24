@@ -307,6 +307,101 @@ class SparseVoxelMapNavigationSpace(XYT):
 
         return valid
 
+    def sample_near_mask(
+        self,
+        mask: torch.Tensor,
+        radius_m: float = 0.7,
+        max_tries: int = 1000,
+        verbose: bool = False,
+        debug: bool = False,
+        look_at_any_point: bool = False,
+    ) -> Optional[np.ndarray]:
+        """Sample a position near the mask and return.
+
+        Args:
+            look_at_any_point(bool): robot should look at the closest point on target mask instead of average pt
+        """
+
+        obstacles, explored = self.voxel_map.get_2d_map()
+
+        # Extract edges from our explored mask
+
+        # Radius computed from voxel map measurements
+        radius = np.ceil(radius_m / self.voxel_map.grid_resolution)
+        expanded_mask = expand_mask(mask, radius)
+
+        # TODO: was this:
+        # expanded_mask = expanded_mask & less_explored & ~obstacles
+        expanded_mask = expanded_mask & explored & ~obstacles
+        # print(torch.where(explored & ~obstacles))
+        # print(torch.where(expanded_mask))
+
+        if True:
+            import matplotlib.pyplot as plt
+
+            plt.imshow(
+                mask.int()
+                + expanded_mask.int() * 10
+                + explored.int()
+                + obstacles.int() * 5
+            )
+            plt.savefig('debug.png')
+
+        # Where can the robot go?
+        valid_indices = torch.nonzero(expanded_mask, as_tuple=False)
+        if valid_indices.size(0) == 0:
+            print("[VOXEL MAP: sampling] No valid goals near mask!")
+            return None
+        if not look_at_any_point:
+            mask_indices = torch.nonzero(mask, as_tuple=False)
+            outside_point = mask_indices.float().mean(dim=0)
+
+        # maximum number of tries
+        for i in range(max_tries):
+            random_index = torch.randint(valid_indices.size(0), (1,))
+            point_grid_coords = valid_indices[random_index]
+
+            if look_at_any_point:
+                outside_point = find_closest_point_on_mask(
+                    mask, point_grid_coords.float()
+                )
+
+            # convert back
+            point = self.voxel_map.grid_coords_to_xy(point_grid_coords)
+            if point is None:
+                print("[VOXEL MAP: sampling] ERR:", point, point_grid_coords)
+                continue
+            if outside_point is None:
+                print(
+                    "[VOXEL MAP: sampling] ERR finding closest pt:",
+                    point,
+                    point_grid_coords,
+                    "closest =",
+                    outside_point,
+                )
+                continue
+            theta = math.atan2(
+                outside_point[1] - point_grid_coords[0, 1],
+                outside_point[0] - point_grid_coords[0, 0],
+            )
+
+            # Ensure angle is in 0 to 2 * PI
+            if theta < 0:
+                theta += 2 * np.pi
+
+            xyt = torch.zeros(3)
+            xyt[:2] = point
+            xyt[2] = theta
+
+            # Check to see if this point is valid
+            if verbose:
+                print("[VOXEL MAP: sampling]", radius, i, "sampled", xyt)
+            if self.is_valid(xyt, verbose=verbose):
+                yield xyt
+
+        # We failed to find anything useful
+        return None
+
     def has_zero_contour(self, phi):
         """
         Check if a zero contour exists in the given phi array.
@@ -517,120 +612,6 @@ class SparseVoxelMapNavigationSpace(XYT):
             if tries > max_tries:
                 break
         yield None
-
-    # def sample_random_frontier(
-    #     self,
-    #     max_tries_per_size: int = 100,
-    #     min_size: int = 5,
-    #     max_size: int = 10,
-    #     debug: bool = False,
-    #     verbose: bool = False,
-    # ) -> Optional[torch.Tensor]:
-    #     """Sample a valid location on the current frontier. Works by finding the edges of "explored" that are not obstacles.
-
-    #     Args:
-    #         max_tries_per_size(int): number for rejection sampling
-    #         min_size(int): min radius of filter for growing frontier
-    #         max_size(int): max radius of filter for growing frontier
-    #         debug(bool): show visualizations of frontiers
-    #     """
-
-    #     # Get the masks from our 3d map
-    #     obstacles, explored = self.voxel_map.get_2d_map()
-
-    #     # Extract edges from our explored mask
-    #     less_explored = binary_erosion(
-    #         explored.float().unsqueeze(0).unsqueeze(0), self.dilate_explored_kernel
-    #     )[0, 0]
-    #     edges = get_edges(less_explored)
-
-    #     # Do not explore obstacles any more
-    #     frontier_edges = edges & ~obstacles
-
-    #     # Mask where we will look at
-    #     outside_frontier = ~explored & ~obstacles
-
-    #     for radius in range(min_size, max_size + 1):
-    #         # Now we apply this filter and try to sample a goal position
-    #         if verbose:
-    #             print("[VOXEL MAP: sampling] sampling margin of size", radius)
-    #         expanded_frontier = expand_mask(frontier_edges, radius)
-    #         # TODO: should we do this or not?
-    #         # Make sure not to sample things that will just be in obstacles
-    #         # expanded_obstacles = expand_mask(obstacles, radius)
-
-    #         # Mask where we will sample locations to move to
-    #         expanded_frontier = expanded_frontier & explored & ~obstacles
-
-    #         if debug:
-    #             import matplotlib.pyplot as plt
-
-    #             plt.subplot(221)
-    #             plt.imshow(frontier_edges.cpu().numpy())
-    #             plt.subplot(222)
-    #             plt.imshow(expanded_frontier.cpu().numpy())
-    #             plt.title("expanded frontier")
-    #             plt.subplot(223)
-    #             plt.imshow(outside_frontier.cpu().numpy())
-    #             plt.title("outside frontier")
-    #             plt.subplot(224)
-    #             plt.imshow((less_explored + explored).cpu().numpy())
-    #             plt.title("explored")
-    #             plt.show()
-
-    #         # TODO: this really should not be random at all
-    #         valid_indices = torch.nonzero(expanded_frontier, as_tuple=False)
-    #         if valid_indices.size(0) == 0:
-    #             continue
-
-    #         # Rejection sampling:
-    #         # - Find a point that we could potentially move to
-    #         # - Compute a position and orientation
-    #         # - Check to see if we can actually move there
-    #         # - If so, return it
-    #         for i in range(max_tries_per_size):
-    #             random_index = torch.randint(valid_indices.size(0), (1,))
-    #             # self.grid_coords_to_xy(valid_indices[random_index])
-    #             point_grid_coords = valid_indices[random_index]
-    #             outside_point = find_closest_point_on_mask(
-    #                 outside_frontier, point_grid_coords.float()
-    #             )
-
-    #             # convert back
-    #             point = self.voxel_map.grid_coords_to_xy(point_grid_coords)
-    #             if point is None:
-    #                 print("[VOXEL MAP: sampling] ERR:", point, point_grid_coords)
-    #                 continue
-    #             if outside_point is None:
-    #                 print(
-    #                     "[VOXEL MAP: sampling] ERR finding closest pt:",
-    #                     point,
-    #                     point_grid_coords,
-    #                     "closest =",
-    #                     outside_point,
-    #                 )
-    #                 continue
-    #             theta = math.atan2(
-    #                 outside_point[1] - point_grid_coords[0, 1],
-    #                 outside_point[0] - point_grid_coords[0, 0],
-    #             )
-
-    #             # Ensure angle is in 0 to 2 * PI
-    #             if theta < 0:
-    #                 theta += 2 * np.pi
-
-    #             xyt = torch.zeros(3)
-    #             xyt[:2] = point
-    #             xyt[2] = theta
-
-    #             # Check to see if this point is valid
-    #             if verbose:
-    #                 print("[VOXEL MAP: sampling]", radius, i, "sampled", xyt)
-    #             if self.is_valid(xyt):
-    #                 yield xyt
-
-    #     # We failed to find anything useful
-    #     yield None
 
     def show(
         self,
